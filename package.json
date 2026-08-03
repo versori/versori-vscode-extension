@@ -1,0 +1,66 @@
+{
+  "name": "versori-vscode",
+  "displayName": "Versori",
+  "description": "Status bar context indicator and command launcher for the Versori CLI",
+  "version": "0.5.0",
+  "publisher": "versori",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=20"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/.versori",
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "versori.showMenu",
+        "title": "Versori: Show Menu"
+      },
+      {
+        "command": "versori.showOutput",
+        "title": "Versori: Show Output"
+      }
+    ],
+    "configuration": {
+      "title": "Versori",
+      "properties": {
+        "versori.cliPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the `versori` binary. Leave empty to search `PATH`, then fall back to `~/go/bin/versori`. Set this if the status bar reports the CLI is missing — VS Code does not see shell aliases."
+        },
+        "versori.confirmDeploy": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Ask for confirmation before a real (non-dry-run) deploy. Ticking **Don't ask again** in the deploy panel turns this off; re-enable it here."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node20",
+    "watch": "npm run build -- --sourcemap --watch",
+    "package": "npm run build -- --minify",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "vsix": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

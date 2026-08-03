@@ -1,0 +1,148 @@
+export interface SelectOption {
+    value: string;
+    label: string;
+}
+
+/** Show a control only while another control holds a given value. */
+export interface ShowWhen {
+    field: string;
+    equals: string;
+}
+
+export type Control =
+    | { kind: 'select'; id: string; label: string; value: string; options: SelectOption[] }
+    | { kind: 'datetime'; id: string; label: string; value: string; showWhen?: ShowWhen }
+    | { kind: 'number'; id: string; label: string; value: number; min?: number };
+
+export type ControlValues = Record<string, string | number>;
+
+export const CUSTOM_RANGE = 'custom';
+
+/**
+ * Trailing-window presets for `--since`.
+ *
+ * Values are Go durations: `time.ParseDuration` supports ns/us/ms/s/m/h and
+ * **no day unit**, so multi-day windows are expressed in hours.
+ */
+export const RANGE_PRESETS: SelectOption[] = [
+    { value: '15m', label: 'Last 15 minutes' },
+    { value: '1h', label: 'Last hour' },
+    { value: '6h', label: 'Last 6 hours' },
+    { value: '24h', label: 'Last 24 hours' },
+    { value: '72h', label: 'Last 3 days' },
+    { value: '168h', label: 'Last 7 days' },
+    { value: CUSTOM_RANGE, label: 'Custom range...' },
+];
+
+/**
+ * Coerce a browser datetime-local value into a format the CLI accepts.
+ *
+ * `--start`/`--end` take RFC3339, `YYYY-MM-DDTHH:MM:SS`, or `YYYY-MM-DD`.
+ * A datetime-local input yields `YYYY-MM-DDTHH:MM`, one field short.
+ */
+export function normaliseTime(value: string): string {
+    const text = value.trim();
+
+    if (!text) {
+        return '';
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+        return text;
+    }
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(text)) {
+        return `${text}:00`;
+    }
+
+    return text;
+}
+
+/**
+ * Time and limit flags for `projects logs`.
+ *
+ * `--since` and `--start`/`--end` are mutually exclusive, so exactly one branch
+ * runs and the pair can never both be emitted.
+ */
+export function buildLogArgs(values: ControlValues): string[] {
+    const args: string[] = [];
+    const range = String(values.range ?? '1h');
+
+    if (range === CUSTOM_RANGE) {
+        const start = normaliseTime(String(values.from ?? ''));
+        if (start) {
+            args.push('--start', start);
+        }
+
+        // Omitting --end is valid: the CLI defaults it to 7 days after --start.
+        const end = normaliseTime(String(values.to ?? ''));
+        if (end) {
+            args.push('--end', end);
+        }
+    } else {
+        args.push('--since', range);
+    }
+
+    const limit = Number(values.limit ?? 200);
+    if (Number.isFinite(limit) && limit > 0) {
+        args.push('--limit', String(Math.floor(limit)));
+    }
+
+    return args;
+}
+
+/** Human-readable problem with the current selection, or undefined when valid. */
+export function validateLogRange(values: ControlValues): string | undefined {
+    if (String(values.range ?? '') !== CUSTOM_RANGE) {
+        return undefined;
+    }
+
+    const from = normaliseTime(String(values.from ?? ''));
+    if (!from) {
+        return 'Choose a start time, or pick a preset range.';
+    }
+
+    const to = normaliseTime(String(values.to ?? ''));
+    if (to && new Date(to).getTime() < new Date(from).getTime()) {
+        return 'The end time is before the start time.';
+    }
+
+    return undefined;
+}
+
+/** Window description for the panel heading. */
+export function describeRange(values: ControlValues): string {
+    const range = String(values.range ?? '1h');
+
+    if (range !== CUSTOM_RANGE) {
+        return RANGE_PRESETS.find((p) => p.value === range)?.label ?? range;
+    }
+
+    const from = normaliseTime(String(values.from ?? ''));
+    const to = normaliseTime(String(values.to ?? ''));
+
+    if (!from) {
+        return 'Custom range';
+    }
+
+    return to ? `${from} to ${to}` : `since ${from}`;
+}
+
+export function logControls(): Control[] {
+    return [
+        { kind: 'select', id: 'range', label: 'Time range', value: '1h', options: RANGE_PRESETS },
+        {
+            kind: 'datetime',
+            id: 'from',
+            label: 'From',
+            value: '',
+            showWhen: { field: 'range', equals: CUSTOM_RANGE },
+        },
+        {
+            kind: 'datetime',
+            id: 'to',
+            label: 'To',
+            value: '',
+            showWhen: { field: 'range', equals: CUSTOM_RANGE },
+        },
+        { kind: 'number', id: 'limit', label: 'Limit', value: 200, min: 1 },
+    ];
+}
