@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 
 import { CliError, CommandSpec, displayCommand, run } from '../cli';
 import { contextFor } from '../commands/target';
-import { loadEnvironments } from '../environments';
+import { loadEnvironments, reportEnvironmentProblem } from '../environments';
 import { ResolvedState } from '../resolver/types';
 import { buildDeployArgs, buildVersionArgs, readBoolean, readString } from './build';
 import { renderFormHtml } from './html';
@@ -23,10 +23,8 @@ const openPanels = new Map<string, vscode.WebviewPanel>();
 
 export async function openDeployForm(deps: FormDeps): Promise<void> {
     const environments = await loadEnvironments(deps.bin, deps.state, deps.output);
-    if (environments.length === 0) {
-        vscode.window.showErrorMessage(
-            'Versori: no environments found for this project. Deploy from the terminal instead.',
-        );
+    if (environments.names.length === 0) {
+        reportEnvironmentProblem(environments, deps.output);
         return;
     }
 
@@ -65,8 +63,8 @@ export async function openDeployForm(deps: FormDeps): Promise<void> {
                 kind: 'select',
                 id: 'environment',
                 label: 'Environment',
-                value: environments[0],
-                options: environments,
+                value: environments.names[0],
+                options: environments.names,
             },
             {
                 kind: 'checkbox',

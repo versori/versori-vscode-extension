@@ -3,12 +3,15 @@ import * as vscode from 'vscode';
 
 import { CliError, run, runJson } from '../cli';
 import { parseContextList } from '../contexts';
-import { pickEnvironment } from '../environments';
+import { loadEnvironments, reportEnvironmentProblem } from '../environments';
 import { openDeployForm, openSaveVersionForm } from '../forms/panel';
 import { ResolvedState } from '../resolver/types';
 import {
     buildLogArgs,
     describeRange,
+    ENVIRONMENT_ID,
+    environmentArgs,
+    environmentControl,
     logControls,
     validateLogRange,
 } from '../results/controls';
@@ -107,27 +110,20 @@ function buildItems(deps: MenuDeps): ActionItem[] {
 /* ------------------------------------------------------------------ views */
 
 async function showLogs(deps: MenuDeps): Promise<void> {
-    const environment = await pickEnvironment(deps.bin, deps.state, deps.output);
-    if (!environment) {
+    const environments = await loadEnvironments(deps.bin, deps.state, deps.output);
+    if (environments.names.length === 0) {
+        reportEnvironmentProblem(environments, deps.output);
         return;
     }
 
     await showResults(deps, {
         id: 'logs',
-        heading: (values) => `Logs · ${environment} · ${describeRange(values)}`,
-        baseArgs: [
-            'projects',
-            'logs',
-            ...projectArgs(deps.state),
-            '--environment',
-            environment,
-        ],
-        controls: logControls(),
-        controlArgs: buildLogArgs,
+        heading: (values) =>
+            `Logs · ${values[ENVIRONMENT_ID]} · ${describeRange(values)}`,
+        baseArgs: ['projects', 'logs', ...projectArgs(deps.state)],
+        controls: [environmentControl(environments.names), ...logControls()],
+        controlArgs: (values) => [...environmentArgs(values), ...buildLogArgs(values)],
         validate: validateLogRange,
-        // Verified against real output: each NDJSON line is
-        // { fields:{activationId,executionId,externalUserId,level,name,triggerName},
-        //   message, severity, timestamp, error }
         preferred: [
             'timestamp',
             'severity',
@@ -152,22 +148,19 @@ async function showIssues(deps: MenuDeps): Promise<void> {
 }
 
 async function showSystems(deps: MenuDeps): Promise<void> {
-    const environment = await pickEnvironment(deps.bin, deps.state, deps.output);
-    if (!environment) {
+    const environments = await loadEnvironments(deps.bin, deps.state, deps.output);
+    if (environments.names.length === 0) {
+        reportEnvironmentProblem(environments, deps.output);
         return;
     }
 
     await showResults(deps, {
         id: 'systems',
-        heading: () => `Systems · ${environment}`,
-        baseArgs: [
-            'projects',
-            'systems',
-            'list',
-            ...projectArgs(deps.state),
-            '--environment',
-            environment,
-        ],
+        heading: (values) => `Systems · ${values[ENVIRONMENT_ID]}`,
+        // argv stays `projects systems` — Task 11 renames only what the user sees.
+        baseArgs: ['projects', 'systems', 'list', ...projectArgs(deps.state)],
+        controls: [environmentControl(environments.names)],
+        controlArgs: environmentArgs,
         preferred: ['name', 'id', 'templateBaseUrl'],
     });
 }

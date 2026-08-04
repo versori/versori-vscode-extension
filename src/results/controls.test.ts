@@ -4,6 +4,8 @@ import {
     buildLogArgs,
     CUSTOM_RANGE,
     describeRange,
+    environmentArgs,
+    environmentControl,
     normaliseTime,
     RANGE_PRESETS,
     validateLogRange,
@@ -141,5 +143,38 @@ describe('describeRange', () => {
         expect(describeRange({ range: CUSTOM_RANGE, from: '2026-07-30' })).toBe(
             'since 2026-07-30',
         );
+    });
+});
+
+describe('environmentControl', () => {
+    it('defaults to the only environment when a project has one', () => {
+        const control = environmentControl(['production']);
+        expect(control).toEqual({
+            kind: 'select',
+            id: 'environment',
+            label: 'Environment',
+            value: 'production',
+            options: [{ value: 'production', label: 'production' }],
+        });
+    });
+
+    it('defaults to the first of several, leaving the rest selectable', () => {
+        const control = environmentControl(['production', 'staging']);
+        expect(control.value).toBe('production');
+        expect(control.kind === 'select' && control.options.map((o) => o.value)).toEqual([
+            'production',
+            'staging',
+        ]);
+    });
+});
+
+describe('environmentArgs', () => {
+    it('names the environment for the CLI', () => {
+        expect(environmentArgs({ environment: 'staging' })).toEqual(['--environment', 'staging']);
+    });
+
+    it('emits nothing when unset, rather than an empty flag value', () => {
+        expect(environmentArgs({})).toEqual([]);
+        expect(environmentArgs({ environment: '' })).toEqual([]);
     });
 });

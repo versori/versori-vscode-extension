@@ -8,6 +8,16 @@ interface ProjectDetails {
     environments?: Array<{ name?: string; Name?: string } | string>;
 }
 
+export interface EnvironmentLookup {
+    names: string[];
+    /**
+     * Present when the CLI call failed. Distinguishes "could not ask" from
+     * "asked, and the project genuinely has none" — the two used to be
+     * indistinguishable, which is how a failed lookup became a text prompt.
+     */
+    error?: string;
+}
+
 /**
  * Environment names for a project.
  *
@@ -15,15 +25,17 @@ interface ProjectDetails {
  * `projects details`. That command takes the project id as a **positional
  * argument** — it has no `--project` flag and does not read `.versori`. Called
  * without one it opens an interactive TUI picker, which fails outright when
- * spawned without a TTY ("could not open a new TTY"). Always pass the id.
+ * spawned without a TTY ("could not open a new TTY"). Always pass the id, and
+ * always pass `--context` (see contextFor): the command resolves its
+ * organisation from the active context, not from `.versori`.
  */
 export async function loadEnvironments(
     bin: string,
     state: ResolvedState,
     output: vscode.OutputChannel,
-): Promise<string[]> {
+): Promise<EnvironmentLookup> {
     if (!state.projectId) {
-        return [];
+        return { names: [] };
     }
 
     try {
@@ -37,39 +49,47 @@ export async function loadEnvironments(
                 }),
         );
 
-        return (details?.environments ?? [])
+        const names = (details?.environments ?? [])
             .map((env) => (typeof env === 'string' ? env : (env?.name ?? env?.Name)))
             .filter((name): name is string => Boolean(name));
+
+        return { names };
     } catch (err) {
         const message = err instanceof CliError ? err.stderr || err.message : String(err);
         output.appendLine(`could not load environments: ${message}`);
-        return [];
+        return { names: [], error: message };
     }
 }
 
 /**
- * Resolve the environment to act on: chosen automatically when the project has
- * exactly one, otherwise picked by the user.
+ * Tell the user why a panel could not open. Never silently degrades to asking
+ * them to type an environment name — a wrong guess there produces an empty
+ * result set that looks like a real answer.
  */
-export async function pickEnvironment(
-    bin: string,
-    state: ResolvedState,
+export function reportEnvironmentProblem(
+    lookup: EnvironmentLookup,
     output: vscode.OutputChannel,
-): Promise<string | undefined> {
-    const names = await loadEnvironments(bin, state, output);
-
-    if (names.length === 1) {
-        return names[0];
+): void {
+    if (lookup.error) {
+        void vscode.window
+            .showErrorMessage(
+                `Versori: could not read this project's environments — ${firstLine(lookup.error)}`,
+                'Show output',
+            )
+            .then((action) => {
+                if (action === 'Show output') {
+                    output.show(true);
+                }
+            });
+        return;
     }
 
-    if (names.length === 0) {
-        return vscode.window.showInputBox({
-            title: 'Environment',
-            prompt: 'Could not read the project’s environments — enter one',
-            placeHolder: 'production',
-            ignoreFocusOut: true,
-        });
-    }
+    void vscode.window.showWarningMessage(
+        'Versori: this project has no environments yet. Create one with `versori projects environments create`.',
+    );
+}
 
-    return vscode.window.showQuickPick(names, { title: 'Select environment' });
+function firstLine(text: string): string {
+    const line = text.split('\n').find((l) => l.trim()) ?? 'command failed';
+    return line.length > 200 ? `${line.slice(0, 200)}...` : line;
 }

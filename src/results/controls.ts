@@ -126,6 +126,30 @@ export function describeRange(values: ControlValues): string {
     return to ? `${from} to ${to}` : `since ${from}`;
 }
 
+export const ENVIRONMENT_ID = 'environment';
+
+/**
+ * Environment picker for a panel's control row.
+ *
+ * Defaulting to `names[0]` is what makes a single-environment project need no
+ * choice at all, while keeping the value changeable in place — the reason this
+ * is a control rather than a QuickPick shown before the panel opens.
+ */
+export function environmentControl(names: string[]): Control {
+    return {
+        kind: 'select',
+        id: ENVIRONMENT_ID,
+        label: 'Environment',
+        value: names[0] ?? '',
+        options: names.map((name) => ({ value: name, label: name })),
+    };
+}
+
+export function environmentArgs(values: ControlValues): string[] {
+    const name = String(values[ENVIRONMENT_ID] ?? '').trim();
+    return name ? ['--environment', name] : [];
+}
+
 export function logControls(): Control[] {
     return [
         { kind: 'select', id: 'range', label: 'Time range', value: '1h', options: RANGE_PRESETS },
