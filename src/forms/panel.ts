@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 
 import { CliError, CommandSpec, displayCommand, run } from '../cli';
 import { contextFor } from '../commands/target';
-import { loadEnvironments, reportEnvironmentProblem } from '../environments';
+import { resolveEnvironmentNames } from '../environments';
 import { ResolvedState } from '../resolver/types';
 import { buildDeployArgs, buildVersionArgs, readBoolean, readString } from './build';
 import { renderFormHtml } from './html';
@@ -22,9 +22,8 @@ export interface FormDeps {
 const openPanels = new Map<string, vscode.WebviewPanel>();
 
 export async function openDeployForm(deps: FormDeps): Promise<void> {
-    const environments = await loadEnvironments(deps.bin, deps.state, deps.output);
-    if (environments.names.length === 0) {
-        reportEnvironmentProblem(environments, deps.output);
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
         return;
     }
 
@@ -63,8 +62,8 @@ export async function openDeployForm(deps: FormDeps): Promise<void> {
                 kind: 'select',
                 id: 'environment',
                 label: 'Environment',
-                value: environments.names[0],
-                options: environments.names,
+                value: environments[0],
+                options: environments,
             },
             {
                 kind: 'checkbox',

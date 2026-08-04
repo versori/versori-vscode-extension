@@ -93,3 +93,28 @@ function firstLine(text: string): string {
     const line = text.split('\n').find((l) => l.trim()) ?? 'command failed';
     return line.length > 200 ? `${line.slice(0, 200)}...` : line;
 }
+
+export interface EnvironmentTarget {
+    bin: string;
+    state: ResolvedState;
+    output: vscode.OutputChannel;
+}
+
+/**
+ * Environment names for a project, or undefined when there are none to offer.
+ *
+ * Reports the problem itself, so callers cannot accidentally continue past a
+ * failed lookup — the defect this module exists to prevent.
+ */
+export async function resolveEnvironmentNames(
+    target: EnvironmentTarget,
+): Promise<string[] | undefined> {
+    const lookup = await loadEnvironments(target.bin, target.state, target.output);
+
+    if (lookup.names.length === 0) {
+        reportEnvironmentProblem(lookup, target.output);
+        return undefined;
+    }
+
+    return lookup.names;
+}

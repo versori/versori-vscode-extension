@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 import { CliError, run, runJson } from '../cli';
 import { parseContextList } from '../contexts';
-import { loadEnvironments, reportEnvironmentProblem } from '../environments';
+import { resolveEnvironmentNames } from '../environments';
 import { openDeployForm, openSaveVersionForm } from '../forms/panel';
 import { ResolvedState } from '../resolver/types';
 import {
@@ -110,9 +110,8 @@ function buildItems(deps: MenuDeps): ActionItem[] {
 /* ------------------------------------------------------------------ views */
 
 async function showLogs(deps: MenuDeps): Promise<void> {
-    const environments = await loadEnvironments(deps.bin, deps.state, deps.output);
-    if (environments.names.length === 0) {
-        reportEnvironmentProblem(environments, deps.output);
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
         return;
     }
 
@@ -121,7 +120,7 @@ async function showLogs(deps: MenuDeps): Promise<void> {
         heading: (values) =>
             `Logs · ${values[ENVIRONMENT_ID]} · ${describeRange(values)}`,
         baseArgs: ['projects', 'logs', ...projectArgs(deps.state)],
-        controls: [environmentControl(environments.names), ...logControls()],
+        controls: [environmentControl(environments), ...logControls()],
         controlArgs: (values) => [...environmentArgs(values), ...buildLogArgs(values)],
         validate: validateLogRange,
         preferred: [
@@ -148,9 +147,8 @@ async function showIssues(deps: MenuDeps): Promise<void> {
 }
 
 async function showSystems(deps: MenuDeps): Promise<void> {
-    const environments = await loadEnvironments(deps.bin, deps.state, deps.output);
-    if (environments.names.length === 0) {
-        reportEnvironmentProblem(environments, deps.output);
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
         return;
     }
 
@@ -159,7 +157,7 @@ async function showSystems(deps: MenuDeps): Promise<void> {
         heading: (values) => `Systems · ${values[ENVIRONMENT_ID]}`,
         // argv stays `projects systems` — Task 11 renames only what the user sees.
         baseArgs: ['projects', 'systems', 'list', ...projectArgs(deps.state)],
-        controls: [environmentControl(environments.names)],
+        controls: [environmentControl(environments)],
         controlArgs: environmentArgs,
         preferred: ['name', 'id', 'templateBaseUrl'],
     });
