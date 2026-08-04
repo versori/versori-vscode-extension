@@ -95,7 +95,7 @@ const RESULTS_SCRIPT = `
       el('controls'),
       (payload && payload.controls) || [],
       controlValues,
-      (id, value) => { controlValues[id] = value; controls(); },
+      (id, value) => { controlValues[id] = value; },
       apply,
       payload && payload.controlError,
     );

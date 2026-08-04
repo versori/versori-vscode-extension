@@ -187,6 +187,9 @@ export const BASE_CSS = `
  */
 export const CONTROLS_SCRIPT = `
 function renderControls(host, controls, values, onChange, onApply, controlError) {
+  const rerender = () =>
+    renderControls(host, controls, values, onChange, onApply, controlError);
+
   host.textContent = '';
 
   if (!controls || controls.length === 0) {
@@ -221,6 +224,8 @@ function renderControls(host, controls, values, onChange, onApply, controlError)
       }
       input.addEventListener('change', () => {
         onChange(control.id, input.value);
+        // Re-render so conditional fields appear or disappear immediately.
+        rerender();
       });
     } else {
       input = document.createElement('input');
