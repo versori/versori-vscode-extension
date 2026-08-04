@@ -13,6 +13,7 @@ import {
     validateLogRange,
 } from '../results/controls';
 import { showResults } from '../results/panel';
+import { projectArgs } from './target';
 
 export interface MenuDeps {
     /** Absolute path to the versori binary. */
@@ -104,16 +105,6 @@ function buildItems(deps: MenuDeps): ActionItem[] {
 }
 
 /* ------------------------------------------------------------------ views */
-
-/**
- * Every project-scoped command gets `--project` explicitly rather than relying
- * on the CLI reading `.versori` from cwd. The id comes from that same file, so
- * the pinned-context override still applies (config.go requires the resolved id
- * to match `.versori`'s, which it does).
- */
-function projectArgs(state: ResolvedState): string[] {
-    return state.projectId ? ['--project', state.projectId] : [];
-}
 
 async function showLogs(deps: MenuDeps): Promise<void> {
     const environment = await pickEnvironment(deps.bin, deps.state, deps.output);

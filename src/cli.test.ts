@@ -46,6 +46,46 @@ describe('buildArgs', () => {
         buildArgs({ args });
         expect(args).toEqual(['projects', 'list']);
     });
+
+    describe('buildArgs context flag', () => {
+        it('emits --context before --output when a context is given', () => {
+            expect(buildArgs({ args: ['projects', 'logs'], context: 'acme' })).toEqual([
+                'projects',
+                'logs',
+                '--context',
+                'acme',
+                '--output',
+                'json',
+            ]);
+        });
+
+        it('omits --context when none is given', () => {
+            expect(buildArgs({ args: ['projects', 'logs'] })).toEqual([
+                'projects',
+                'logs',
+                '--output',
+                'json',
+            ]);
+        });
+
+        it('emits --context for plain-output commands too', () => {
+            expect(buildArgs({ args: ['projects', 'deploy'], context: 'acme', json: false })).toEqual([
+                'projects',
+                'deploy',
+                '--context',
+                'acme',
+            ]);
+        });
+
+        it('ignores an empty context rather than emitting a bare flag', () => {
+            expect(buildArgs({ args: ['context', 'list'], context: '' })).toEqual([
+                'context',
+                'list',
+                '--output',
+                'json',
+            ]);
+        });
+    });
 });
 
 describe('findCli', () => {

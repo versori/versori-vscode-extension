@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import * as vscode from 'vscode';
 
 import { CliError, CommandSpec, displayCommand, runJson } from '../cli';
+import { contextFor } from '../commands/target';
 import { ResolvedState } from '../resolver/types';
 import { Control, ControlValues } from './controls';
 import { renderResultsHtml, ResultsPayload } from './html';
@@ -98,7 +99,11 @@ async function load(
 ): Promise<void> {
     const values = entry.values;
     const args = [...request.baseArgs, ...(request.controlArgs?.(values) ?? [])];
-    const spec: CommandSpec = { args, cwd: deps.state.projectDir };
+    const spec: CommandSpec = {
+        args,
+        cwd: deps.state.projectDir,
+        context: contextFor(deps.state),
+    };
     const command = displayCommand(spec);
 
     const base: ResultsPayload = {

@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import { CliError, CommandSpec, displayCommand, run } from '../cli';
+import { contextFor } from '../commands/target';
 import { loadEnvironments } from '../environments';
 import { ResolvedState } from '../resolver/types';
 import { buildDeployArgs, buildVersionArgs, readBoolean, readString } from './build';
@@ -175,7 +176,12 @@ async function execute(
         return;
     }
 
-    const cmd: CommandSpec = { args, cwd: deps.state.projectDir, json: false };
+    const cmd: CommandSpec = {
+        args,
+        cwd: deps.state.projectDir,
+        context: contextFor(deps.state),
+        json: false,
+    };
     const dryRun = readBoolean(values, spec.dryRunFieldId);
 
     try {

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import { CliError, runJson } from './cli';
+import { contextFor } from './commands/target';
 import { ResolvedState } from './resolver/types';
 
 interface ProjectDetails {
@@ -32,6 +33,7 @@ export async function loadEnvironments(
                 runJson<ProjectDetails>(bin, {
                     args: ['projects', 'details', state.projectId as string],
                     cwd: state.projectDir,
+                    context: contextFor(state),
                 }),
         );
 

@@ -32,16 +32,32 @@ export interface CommandSpec {
     cwd?: string;
     /** Append `--output json`. Default true. Set false for streaming/plain output. */
     json?: boolean;
+    /**
+     * Context name for the global `-x/--context` flag.
+     *
+     * Required for commands that take the project id as a **positional argument**
+     * (`projects details`), because those never apply the `.versori`-pinned
+     * context — they resolve the organisation from the active context, so inside a
+     * project that pins a different one they query the wrong org and 404.
+     */
+    context?: string;
 }
 
 /**
  * Build the full argv for a command.
  *
- * `--output`/`-o` is a global flag accepting `table`, `json`, or `yaml`
+ * `--output`/`-o` is a global flag accepting `table`, `json`, or `yaml`, and
+ * `--context`/`-x` overrides the active context for a single command
  * (see docs/README.md in the cli repo).
  */
 export function buildArgs(spec: CommandSpec): string[] {
-    return spec.json === false ? [...spec.args] : [...spec.args, '--output', 'json'];
+    const args = [...spec.args];
+
+    if (spec.context) {
+        args.push('--context', spec.context);
+    }
+
+    return spec.json === false ? args : [...args, '--output', 'json'];
 }
 
 /**
