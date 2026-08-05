@@ -47,6 +47,22 @@ describe('flattenDeep', () => {
         expect(keys).toHaveLength(1);
         expect(keys[0]).toBe('a.b.c.d');
     });
+
+    it('redacts secrets nested inside arrays, not just at the top level', () => {
+        // A workflow can put objects inside array-valued fields; a secret in one of
+        // those objects must not survive stringification into the field value.
+        const fields = flattenDeep({ fields: { tags: [{ apiKey: 'sk-live-SECRET', ok: 'y' }] } });
+        expect(fields).toEqual([
+            { key: 'fields.tags', value: '[{"apiKey":"[redacted]","ok":"y"}]' },
+        ]);
+    });
+
+    it('redacts a secret below MAX_FIELD_DEPTH instead of stringifying it whole', () => {
+        const deep = { a: { b: { c: { d: { apiKey: 'sk-live-SECRET', e: 'far' } } } } };
+        const fields = flattenDeep(deep);
+        expect(fields).toHaveLength(1);
+        expect(fields[0].value).not.toContain('sk-live-SECRET');
+    });
 });
 
 describe('toLogEntries', () => {
@@ -113,6 +129,42 @@ describe('toLogEntries', () => {
     it('returns an empty list for the no-rows signal', () => {
         // `projects logs` exits 0 and prints zero bytes when there is nothing.
         expect(toLogEntries(undefined)).toEqual([]);
+    });
+
+    it('redacts secrets nested inside arrays wherever they occur, so they never reach searchText either', () => {
+        const [entry] = toLogEntries([
+            {
+                timestamp: record.timestamp,
+                severity: 'INFO',
+                message: 'x',
+                fields: { tags: [{ apiKey: 'sk-live-SECRET', ok: 'y' }] },
+            },
+        ]);
+        expect(entry.fields.map((f) => f.value).join(' ')).not.toContain('sk-live-SECRET');
+        expect(entry.searchText).not.toContain('sk-live-SECRET');
+    });
+
+    it('drops the error-only headline from the field list, so it is not shown twice', () => {
+        const [entry] = toLogEntries([
+            { timestamp: record.timestamp, severity: 'ERROR', error: 'connect ECONNREFUSED' },
+        ]);
+        expect(entry.message).toBe('connect ECONNREFUSED');
+        expect(entry.fields.map((f) => f.key)).not.toContain('error');
+    });
+
+    it('keeps error as a field when message already won the headline, so nothing goes missing', () => {
+        const [entry] = toLogEntries([
+            {
+                timestamp: record.timestamp,
+                severity: 'ERROR',
+                message: 'request failed',
+                error: 'connect ECONNREFUSED',
+            },
+        ]);
+        expect(entry.message).toBe('request failed');
+        expect(entry.fields).toEqual(
+            expect.arrayContaining([{ key: 'error', value: 'connect ECONNREFUSED' }]),
+        );
     });
 });
 

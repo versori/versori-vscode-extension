@@ -1,4 +1,4 @@
-import { formatCell, isSecretKey, levelClass, Row, unwrapRows } from '../results/rows';
+import { formatCell, isSecretKey, levelClass, redact, Row, unwrapRows } from '../results/rows';
 
 export interface LogField {
     key: string;
@@ -29,8 +29,19 @@ export interface LogEntry {
  */
 export const MAX_FIELD_DEPTH = 4;
 
-/** Keys promoted to the headline, so they are not repeated in the field list. */
-const HEADLINE_KEYS = new Set(['timestamp', 'time', 'severity', 'level', 'message', 'msg']);
+/**
+ * Keys shown in a dedicated UI slot regardless of content, so they are always
+ * excluded from the field list.
+ */
+const HEADLINE_KEYS = new Set(['timestamp', 'time', 'severity', 'level']);
+
+/**
+ * Headline candidates, in priority order. Unlike HEADLINE_KEYS, these are only
+ * excluded from the field list when they are the one that actually won the
+ * headline — otherwise a row with both `message` and `error` would silently
+ * drop the unused one instead of just showing it twice.
+ */
+const MESSAGE_KEYS = ['message', 'msg', 'error'];
 
 /**
  * Flatten a value into dotted `parent.child` fields.
@@ -48,7 +59,10 @@ export function flattenDeep(value: unknown, prefix = '', depth = 0): LogField[] 
         typeof value === 'object' && !Array.isArray(value) && depth < MAX_FIELD_DEPTH;
 
     if (!nested) {
-        return prefix ? [{ key: prefix, value: formatCell(value) }] : [];
+        // A terminal value can still be, or contain, a secret — an array of
+        // objects (never descended into) or an object at the depth cutoff both
+        // land here whole. redact() recurses through both before it is stringified.
+        return prefix ? [{ key: prefix, value: formatCell(redact(value)) }] : [];
     }
 
     const out: LogField[] = [];
@@ -81,10 +95,16 @@ function toEntry(row: Row): LogEntry {
 
     const rawTimestamp = firstString(row.timestamp, row.time);
     const severity = firstString(row.severity, row.level, nested.level, nested.severity);
-    const message = firstString(row.message, row.msg, row.error) || '(no message)';
+    const headline = firstKeyedString(row, MESSAGE_KEYS);
+    const message = headline.value || '(no message)';
+
+    const excluded = new Set(HEADLINE_KEYS);
+    if (headline.key) {
+        excluded.add(headline.key);
+    }
 
     const fields = flattenDeep(
-        Object.fromEntries(Object.entries(row).filter(([key]) => !HEADLINE_KEYS.has(key))),
+        Object.fromEntries(Object.entries(row).filter(([key]) => !excluded.has(key))),
     );
 
     return {
@@ -108,6 +128,18 @@ function firstString(...candidates: unknown[]): string {
         }
     }
     return '';
+}
+
+/** Like firstString, but also reports which key won, so callers can exclude
+ * just that one from the field list instead of every candidate. */
+function firstKeyedString(row: Row, keys: string[]): { key?: string; value: string } {
+    for (const key of keys) {
+        const value = firstString(row[key]);
+        if (value) {
+            return { key, value };
+        }
+    }
+    return { value: '' };
 }
 
 /**
