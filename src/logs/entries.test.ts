@@ -126,6 +126,12 @@ describe('toLogEntries', () => {
         expect(toLogEntries([record])[0].searchText).toContain('DurableInterpreter');
     });
 
+    it('includes both timestamp forms in searchText, so typing a date matches', () => {
+        const [entry] = toLogEntries([record]);
+        expect(entry.searchText).toContain(entry.rawTimestamp);
+        expect(entry.searchText).toContain(entry.timestamp);
+    });
+
     it('returns an empty list for the no-rows signal', () => {
         // `projects logs` exits 0 and prints zero bytes when there is nothing.
         expect(toLogEntries(undefined)).toEqual([]);

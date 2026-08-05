@@ -16,7 +16,10 @@ export interface LogEntry {
     /** The headline. Never blank. */
     message: string;
     fields: LogField[];
-    /** Headline + severity + every field value, original case, for substring matching. */
+    /**
+     * Headline + severity + both timestamp forms + every field value, original
+     * case, for substring matching.
+     */
     searchText: string;
 }
 
@@ -107,14 +110,17 @@ function toEntry(row: Row): LogEntry {
         Object.fromEntries(Object.entries(row).filter(([key]) => !excluded.has(key))),
     );
 
+    const timestamp = rawTimestamp ? formatCell(rawTimestamp) : '';
+
     return {
-        timestamp: rawTimestamp ? formatCell(rawTimestamp) : '',
+        timestamp,
         rawTimestamp,
         severity,
         level: levelClass(severity),
         message,
         fields,
-        searchText: [message, severity, ...fields.map((f) => f.value)].join(' '),
+        searchText: [message, severity, rawTimestamp, timestamp, ...fields.map((f) => f.value)]
+            .join(' '),
     };
 }
 
