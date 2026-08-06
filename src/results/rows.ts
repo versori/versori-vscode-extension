@@ -11,6 +11,12 @@
  * (`x-api-key`, `api-key`) match too, and `cookie` covers `set-cookie` as a
  * substring — those are the forms these names actually take when a workflow logs
  * a request it made.
+ *
+ * This regex backs both consumers below, and they diverge on purpose: `redact()`
+ * masks a matching value, `deriveColumns()` drops the whole column. So widening
+ * the pattern to catch header spellings also makes a matching column (e.g.
+ * `cookieDomain`, `api-key-id`) vanish from the table rather than showing
+ * `[redacted]` — fail-safe, but worth knowing before widening it further.
  */
 const SECRET_KEY =
     /jwt|token|secret|password|passwd|api[-_]?key|credential|authorization|cookie/i;

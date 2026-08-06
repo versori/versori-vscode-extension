@@ -115,6 +115,15 @@ describe('deriveColumns', () => {
 
         expect(deriveColumns(rows)).toEqual(['Name', 'OrganisationId']);
     });
+
+    it('drops columns matching the header spellings too, not just masking them', () => {
+        // isSecretKey's widened regex feeds both redact() (masks a value) and
+        // deriveColumns() (drops the column). A hyphenated or cookie-prefixed key
+        // never becomes a column at all here — see the SECRET_KEY doc comment.
+        const rows = [{ Name: 'ctx', cookieDomain: 'example.com', 'x-api-key': 'sk-live-1' }];
+
+        expect(deriveColumns(rows)).toEqual(['Name']);
+    });
 });
 
 describe('isSecretKey', () => {
