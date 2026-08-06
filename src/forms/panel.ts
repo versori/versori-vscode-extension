@@ -21,6 +21,29 @@ export interface FormDeps {
 /** Open panels, keyed by view type, so a second invocation reveals rather than duplicates. */
 const openPanels = new Map<string, vscode.WebviewPanel>();
 
+/**
+ * Which target each open panel was built for, keyed by view type.
+ *
+ * `refreshOnReopen: false` exists so that reopening Deploy or Save version keeps
+ * a half-typed version description rather than throwing it away. But the
+ * revealed panel's handler closes over the first call's `deps` and `spec`, so
+ * `buildArgs` still carries the *original* project — reopening Deploy from
+ * project B revealed A's form, and submitting deployed A.
+ *
+ * Recording the target lets both properties hold at once: reveal-and-retain
+ * within a project, rebuild across projects. The key covers exactly what
+ * `buildArgs` and the `CommandSpec` close over — the project id, the spawn cwd
+ * and the context — so a panel is only ever revealed when every one of them
+ * still matches.
+ */
+const openTargets = new Map<string, string>();
+
+function targetKey(state: ResolvedState): string {
+    // Newline-joined: neither a context name, a ULID project id nor a path
+    // contains one, so the three parts cannot run together ambiguously.
+    return [state.contextName ?? '', state.projectId ?? '', state.projectDir ?? ''].join('\n');
+}
+
 export async function openDeployForm(deps: FormDeps): Promise<void> {
     const environments = await resolveEnvironmentNames(deps);
     if (!environments) {
@@ -44,7 +67,10 @@ export async function openDeployForm(deps: FormDeps): Promise<void> {
         refreshOnReopen: false,
         confirmWhenLive,
         confirmSettingId: CONFIRM_SETTING,
-        confirmMessage: 'This will deploy for real to {environment}.',
+        // Names the project as well as the environment: the last gate should
+        // surface the thing that would be wrong. An environment name alone reads
+        // as correct even when the panel is pointed at another project.
+        confirmMessage: `This will deploy ${deployTarget(deps.state)} for real to {environment}.`,
         buildArgs: (values) =>
             buildDeployArgs({
                 projectId: deps.state.projectId,
@@ -145,18 +171,29 @@ export function openSaveVersionForm(deps: FormDeps): void {
 
 export function show(deps: FormDeps, spec: FormSpec): void {
     const existing = openPanels.get(spec.viewType);
+    const key = targetKey(deps.state);
+
     if (existing) {
-        if (!spec.refreshOnReopen) {
+        // Reveal-and-retain, but only for the project the open panel was built
+        // for. That keeps a half-typed version description across a same-project
+        // reopen without ever revealing — and submitting — another project's form.
+        if (!spec.refreshOnReopen && openTargets.get(spec.viewType) === key) {
             existing.reveal();
             return;
         }
 
-        // The caller has just re-read the state this spec was built from, while the
-        // open panel still holds the previous snapshot in both its fields and its
-        // `buildArgs` closure. Revealing it would submit those stale values — and
-        // for a read-modify-write command that silently reverts whatever changed
-        // in between. Losing unsubmitted keystrokes is much the cheaper harm:
-        // reopening from the menu means "show me the current config".
+        // Either the spec is snapshot-backed (Resources), or the target changed.
+        //
+        // Snapshot case: the caller has just re-read the state this spec was built
+        // from, while the open panel still holds the previous snapshot in both its
+        // fields and its `buildArgs` closure. Revealing it would submit those
+        // stale values — and for a read-modify-write command that silently
+        // reverts whatever changed in between. Losing unsubmitted keystrokes is
+        // much the cheaper harm: reopening from the menu means "show me the
+        // current config".
+        //
+        // Changed-target case: same reasoning, worse consequence — the stale
+        // `buildArgs` would deploy the project the panel was first opened from.
         existing.dispose();
     }
 
@@ -168,11 +205,15 @@ export function show(deps: FormDeps, spec: FormSpec): void {
     );
 
     openPanels.set(spec.viewType, panel);
+    openTargets.set(spec.viewType, key);
     // Identity-checked: a refresh disposes the previous panel for this view type,
-    // and that dispose must not evict the replacement registered just above.
+    // and that dispose must not evict the replacement registered just above. The
+    // target is removed under the same guard, so the two maps cannot fall out of
+    // step whether the dispose handler runs synchronously or is deferred.
     panel.onDidDispose(() => {
         if (openPanels.get(spec.viewType) === panel) {
             openPanels.delete(spec.viewType);
+            openTargets.delete(spec.viewType);
         }
     });
 
@@ -258,6 +299,19 @@ function post(
 
 function projectName(state: ResolvedState): string {
     return state.projectDir ? path.basename(state.projectDir) : 'project';
+}
+
+/**
+ * The project a deploy would actually hit, for the confirmation bar.
+ *
+ * The folder name is what the user recognises; the id is what the CLI is sent,
+ * so both are named. When there is no id the CLI resolves the project from the
+ * spawn cwd, and saying so is more use than printing nothing.
+ */
+function deployTarget(state: ResolvedState): string {
+    return state.projectId
+        ? `${projectName(state)} (${state.projectId})`
+        : `${projectName(state)} (resolved from the current folder)`;
 }
 
 function subtitle(state: ResolvedState): string {
