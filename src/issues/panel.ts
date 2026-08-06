@@ -157,15 +157,19 @@ async function load(entry: OpenPanel): Promise<void> {
         deps.output.appendLine(`${issues.length} issue(s)`);
 
         await post(entry, { ...base, issues, rawJson: JSON.stringify(redact(raw), null, 2) });
-
-        // Independent command, so it runs after the issues are on screen rather
-        // than delaying them — and its own failure stays inside its section.
-        await loadBindings(entry);
     } catch (err) {
         const message = errorText(err);
         deps.output.appendLine(`$ ${command}`);
         deps.output.appendLine(message);
         await post(entry, { ...base, error: message });
+    } finally {
+        // Bindings are an independent command, so they refresh even when the
+        // issues query failed. Leaving the previous render in place would show
+        // the *previous* environment's binding ids under a note claiming this
+        // one, and Unlink would then mutate a target the user never agreed to.
+        // Runs after the issues are posted so it never delays them, and its own
+        // failure stays inside its own section.
+        await loadBindings(entry);
     }
 }
 
@@ -332,6 +336,18 @@ async function linkChannel(entry: OpenPanel): Promise<void> {
         return;
     }
 
+    // The binding's own identity, asked before the filters. Blank lets the
+    // server default it to the channel name, which is the fallback
+    // `toBindingRows` relies on.
+    const name = await vscode.window.showInputBox({
+        title: 'Label for this binding (optional)',
+        placeHolder: 'leave blank to use the channel name',
+        ignoreFocusOut: true,
+    });
+    if (name === undefined) {
+        return;
+    }
+
     const filterTitle = await vscode.window.showInputBox({
         title: 'Only email when the issue title contains... (optional)',
         placeHolder: 'leave blank for no title filter',
@@ -342,6 +358,15 @@ async function linkChannel(entry: OpenPanel): Promise<void> {
         return;
     }
 
+    const filterMessage = await vscode.window.showInputBox({
+        title: 'Only email when the issue message contains... (optional)',
+        placeHolder: 'leave blank for no message filter',
+        ignoreFocusOut: true,
+    });
+    if (filterMessage === undefined) {
+        return;
+    }
+
     await mutate(
         entry,
         'linking channel',
@@ -349,8 +374,10 @@ async function linkChannel(entry: OpenPanel): Promise<void> {
             buildLinkArgs({
                 channelId: picked.id,
                 environment,
+                name,
                 severities,
                 filterTitle,
+                filterMessage,
             }),
         `Linked "${picked.label}" to ${environment}.`,
     );
@@ -359,6 +386,13 @@ async function linkChannel(entry: OpenPanel): Promise<void> {
 /** Remove a binding. Modal-confirmed: alerts stop firing until it is re-linked. */
 async function unlinkChannel(entry: OpenPanel, id: string, label: string): Promise<void> {
     const environment = String(entry.values.environment ?? '');
+    // Same invariant as linkChannel: no mutation without a valid environment.
+    // Without this the modal would read `from ?` and ask the user to confirm a
+    // target that `buildUnlinkArgs` then rejects anyway.
+    if (!environment) {
+        void vscode.window.showWarningMessage('Versori: choose an environment first.');
+        return;
+    }
 
     const confirmed = await vscode.window.showWarningMessage(
         `Unlink "${label}" from ${environment}?`,
