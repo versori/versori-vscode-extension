@@ -333,6 +333,12 @@ function renderControls(host, controls, values, onChange, onApply, controlError)
  * matches field *names*, not values): there the per-field expand is the only
  * real protection, and a persistent raw pane bypasses it.
  *
+ * The reset is per-**payload**, not per-render: three panels call it at the top
+ * of `render()`, but `results` calls it on the payload path instead, because
+ * there `render()` doubles as the filter-input and column-picker handler, and
+ * a keystroke or column toggle is not new data — see `results/html.ts` for
+ * where and why.
+ *
  * Hoisted here rather than written four times so the four panels cannot drift
  * apart again — which is precisely how three of them came to be missing it.
  * Every panel with a raw pane uses the same three element ids (`raw`,
