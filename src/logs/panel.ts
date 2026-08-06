@@ -166,7 +166,19 @@ async function load(entry: OpenPanel): Promise<void> {
             entries,
             fieldKeys: fieldKeys(entries),
             severities: severitiesOf(entries),
-            // Redacted: this view is user-visible and log fields are workflow-authored.
+            // redact() runs for consistency with every other raw view on the
+            // branch, but it is close to a **no-op on log data**: it matches
+            // secret-sounding *key names* (results/rows.ts:8), and log fields are
+            // arbitrary workflow-authored data whose names nobody here chose. A
+            // workflow logging `{ headers: { 'x-api-key': ... } }` is caught only
+            // if the name happens to match; `{ h: '<credential>' }` is not caught
+            // at all, because the value is never inspected.
+            //
+            // So what protects this view is the same thing that protects KV: the
+            // per-field expand keeps values off screen, and the raw pane is closed
+            // on every render (hideRawPane, webview/shell.ts) so revealing a
+            // payload is a deliberate act each time rather than one click that
+            // keeps paying out.
             rawJson: JSON.stringify(redact(raw), null, 2),
         });
     } catch (err) {

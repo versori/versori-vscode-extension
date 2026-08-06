@@ -289,7 +289,7 @@ async function load(entry: OpenPanel): Promise<void> {
             // pagination, key, value, versionstamp, createdAt, expiresAt. None
             // match, so this pane holds every value on the page in full. What
             // keeps it honest is that the pane is closed by default and
-            // re-closed on every render (see hideRaw in html.ts) — a deliberate
+            // re-closed on every render (hideRawPane, webview/shell.ts) — a deliberate
             // act each time, never one click that keeps paying out.
             rawJson: JSON.stringify(redact(raw), null, 2),
         });

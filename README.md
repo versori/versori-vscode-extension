@@ -31,11 +31,16 @@ Click the status bar item. Entries appear in this order below. Project-scoped en
 when the file you are looking at is inside a synced project; the organisation-wide ones always
 show.
 
-**Guarded** — these run `--dry-run` first and show you the real file list before confirming
-(project-scoped):
-- **Deploy...** — pick environment, enter a description, review the dry-run, confirm
-- **Save version...** — name and description collected up front, then a checkpoint that is
-  explicitly *not* deployed
+**Dry run by default** (project-scoped) — both forms open with **Dry run** ticked, so the first
+click lists the files that would upload and changes nothing. They differ in what happens after
+you untick it:
+- **Deploy...** — pick environment, enter a description, review the dry-run. Unticking **Dry
+  run** turns the button red; the next click raises a confirmation bar naming the project and
+  the environment, and you confirm there. `versori.confirmDeploy` turns that last gate off if
+  you do not want it.
+- **Save version...** — name and description collected up front. Unticking **Dry run** submits
+  on the next click with **no extra confirmation**: a version is an inert snapshot that is
+  explicitly *not* deployed, so it does not need deploy's gate.
 
 **A mutation behind a confirmation** (project-scoped):
 - **Resources...** — view and edit CPU/memory/storage requests and limits, replicas, the

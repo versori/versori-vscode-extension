@@ -197,7 +197,19 @@ function toPayload(base: ResultsPayload, raw: unknown, request: ResultsRequest):
             Object.fromEntries(columns.map((column) => [column, formatCell(row[column])])),
         ),
         levels: rows.map((row) => (levelColumn ? levelClass(row[levelColumn]) : undefined)),
-        // Redacted: `context list` embeds JWTs, and this view is user-visible.
+        // redact() runs here, but not for the reason this comment used to give:
+        // `context list` never reaches this panel — switchContext calls runJson
+        // directly and only ever extracts names from the response. The commands
+        // that could carry credential material are `connections list` and
+        // `systems list-connections`, and the Platform API redacts that
+        // **server-side**, so the protection there rests on a server guarantee
+        // rather than on anything this function does.
+        //
+        // redact() is still worth running: it matches secret-sounding key names
+        // (rows.ts:8), which is a cheap backstop if a future command returns one.
+        // It is not a guarantee — it never inspects values. The raw pane being
+        // closed on every payload (hideRawPane, webview/shell.ts) is the other
+        // half.
         rawJson: JSON.stringify(redact(raw), null, 2),
     };
 }
