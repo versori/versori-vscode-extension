@@ -72,6 +72,8 @@ const ELEMENT_IDS = [
     'prevPage',
     'nextPage',
     'pageInfo',
+    'runCount',
+    'total',
 ];
 
 function makeNode(tag: string, all: StubNode[]): StubNode {
@@ -236,6 +238,12 @@ function harness() {
             }
             onMessage({ data: { type: 'kv', payload } });
         },
+        sendCount(message: { total?: number; error?: string }) {
+            if (!onMessage) {
+                throw new Error('the script never registered a message listener');
+            }
+            onMessage({ data: { type: 'count', ...message } });
+        },
         type(needle: string) {
             const box = byId.get('filter') as StubNode;
             box.value = needle;
@@ -393,6 +401,8 @@ describe('expand all', () => {
         const rows = view.rows();
         expect(rows).toHaveLength(1);
         expect(rows[0].headText).toContain('orders/cursor');
+        // Without this the test passes even if expandAll does nothing at all.
+        expect(rows[0].open).toBe(true);
     });
 
     it('resets to collapsed when a new page arrives, so nothing is exposed by a refresh', () => {
@@ -516,6 +526,104 @@ describe('paging', () => {
 
         expect(view.node('pageInfo').textContent).toMatch(/page 1/i);
         expect(view.node('pageInfo').textContent).not.toMatch(/refresh/i);
+    });
+});
+
+describe('the raw JSON pane', () => {
+    it('shows on demand, hiding the entry list behind it', () => {
+        const view = harness();
+        view.send(payload());
+        view.click('toggleRaw');
+
+        expect(view.node('raw').className).toContain('show');
+        expect(view.node('toggleRaw').className).toContain('active');
+        expect(view.node('body').style.display).toBe('none');
+    });
+
+    it('does not survive a re-render — otherwise every later page arrives with every value already on screen', () => {
+        const view = harness();
+        view.send(payload());
+        view.click('toggleRaw');
+
+        // A refresh, an Apply, or a page turn all land here.
+        view.send(payload());
+
+        expect(view.node('raw').className).not.toContain('show');
+        expect(view.node('toggleRaw').className).not.toContain('active');
+        expect(view.node('body').style.display).toBe('');
+    });
+
+    it('can be reopened after a re-render, so the reset is not a lockout', () => {
+        const view = harness();
+        view.send(payload());
+        view.click('toggleRaw');
+        view.send(payload());
+        view.click('toggleRaw');
+
+        expect(view.node('raw').className).toContain('show');
+    });
+
+    it('is labelled for what it dumps, not for the response shape', () => {
+        expect(renderKvHtml('abc123')).toContain('Raw JSON (all values)');
+    });
+});
+
+describe('count', () => {
+    it('runs only when asked — never on load', () => {
+        const view = harness();
+        view.send(payload());
+
+        expect(view.posted).toEqual([]);
+
+        view.click('runCount');
+        expect(view.posted).toEqual([{ type: 'count' }]);
+    });
+
+    it('does not piggyback on a refresh or a page turn, which is the point of on-demand', () => {
+        const view = harness();
+        view.send(payload({ hasNext: true, hasPrev: true, page: 2 }));
+
+        view.click('refresh');
+        view.click('nextPage');
+        view.click('prevPage');
+
+        expect(view.posted.map((m) => m.type)).toEqual(['refresh', 'page', 'page']);
+    });
+
+    it('says it is working while the count is in flight', () => {
+        const view = harness();
+        view.send(payload());
+        view.click('runCount');
+
+        expect(view.node('total').textContent).toMatch(/counting/i);
+    });
+
+    it('shows the total, and warns that it was counted separately from the page', () => {
+        const view = harness();
+        view.send(payload());
+        view.sendCount({ total: 4210 });
+
+        expect(view.node('total').textContent).toContain('4210');
+        expect(view.node('total').textContent).toMatch(/separate/i);
+    });
+
+    it('reports a failure rather than showing a number it does not have', () => {
+        const view = harness();
+        view.send(payload());
+        view.sendCount({ error: 'no organisation in the active context' });
+
+        expect(view.node('total').textContent).toMatch(/could not count/i);
+        expect(view.node('total').textContent).not.toMatch(/\d/);
+    });
+
+    it('clears on the next render, so a total can never be read against a different query', () => {
+        const view = harness();
+        view.send(payload());
+        view.sendCount({ total: 4210 });
+
+        view.send(payload());
+
+        expect(view.node('total').textContent).toBe('');
     });
 });
 

@@ -84,6 +84,24 @@ function toEntry(row: Row): KvEntry {
 }
 
 /**
+ * The total from `kv count`, or undefined when the response held no readable
+ * number.
+ *
+ * `kv count` prints a bare struct — `utils.Print` marshals `printableCount`
+ * directly rather than through the slice path — so the payload is
+ * `{"count":N}`. `unwrapRows` normalises both that and the `items`-wrapped
+ * shape the printer uses for slices, so one read covers either.
+ *
+ * Undefined rather than 0 on a bad shape: reporting "0 entries" for a response
+ * that was never understood would be a confident lie about the store.
+ */
+export function parseKvCount(raw: unknown): number | undefined {
+    const total = unwrapRows(raw)[0]?.count;
+
+    return typeof total === 'number' && Number.isFinite(total) ? total : undefined;
+}
+
+/**
  * Stringify a stored value faithfully.
  *
  * Deliberately not `formatCell`: that rewrites anything ISO-8601-shaped into

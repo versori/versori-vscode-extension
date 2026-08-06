@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildKvListArgs, KV_SCOPES, kvControls, validateKvScope } from './args';
+import {
+    buildKvCountArgs,
+    buildKvListArgs,
+    KV_SCOPES,
+    kvControls,
+    validateKvScope,
+} from './args';
 
 const base = {
     environment: 'production',
@@ -162,6 +168,75 @@ describe('buildKvListArgs cursors', () => {
         const args = buildKvListArgs(base, { after: 'a', before: 'b' });
         expect(args).toContain('--after');
         expect(args).not.toContain('--before');
+    });
+});
+
+describe('buildKvCountArgs', () => {
+    it('targets exactly what the list query targets, so the total matches the view', () => {
+        expect(buildKvCountArgs({ ...base, prefix: 'orders/cursor' })).toEqual([
+            '--scope',
+            'project',
+            '--environment',
+            'production',
+            '--prefix',
+            'orders',
+            '--prefix',
+            'cursor',
+        ]);
+    });
+
+    it('sends no --limit: kv count returns a total, not a capped page', () => {
+        expect(buildKvCountArgs({ ...base, limit: 50 })).not.toContain('--limit');
+    });
+
+    it('sends no cursor, because kv count does not paginate', () => {
+        const args = buildKvCountArgs(base);
+        expect(args).not.toContain('--after');
+        expect(args).not.toContain('--before');
+    });
+
+    it('sends no --raw-values, which `kv count` does not register at all', () => {
+        expect(buildKvCountArgs({ ...base, values: 'raw' })).not.toContain('--raw-values');
+    });
+
+    it('sends no --full-keys, which cannot change a total', () => {
+        expect(buildKvCountArgs({ ...base, keys: 'full' })).not.toContain('--full-keys');
+    });
+
+    it('passes --external-id for the user scope', () => {
+        expect(buildKvCountArgs({ ...base, scope: 'user', externalId: 'cust-1' })).toContain(
+            '--external-id',
+        );
+    });
+
+    it('passes --execution-id for the execution scope', () => {
+        expect(buildKvCountArgs({ ...base, scope: 'execution', executionId: '01JEXEC' })).toContain(
+            '--execution-id',
+        );
+    });
+
+    it('does not leak a user id into another scope', () => {
+        expect(buildKvCountArgs({ ...base, scope: 'project', externalId: 'cust-1' })).not.toContain(
+            '--external-id',
+        );
+    });
+
+    it('ignores empty prefix segments from a stray slash', () => {
+        expect(buildKvCountArgs({ ...base, prefix: '/orders//' })).toEqual([
+            '--scope',
+            'project',
+            '--environment',
+            'production',
+            '--prefix',
+            'orders',
+        ]);
+    });
+
+    it('shares its targeting with the list query rather than restating it', () => {
+        // The prefix of the list args, up to where paging and display flags start.
+        const list = buildKvListArgs({ ...base, prefix: 'orders' });
+        const count = buildKvCountArgs({ ...base, prefix: 'orders' });
+        expect(list.slice(0, count.length)).toEqual(count);
     });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatKvValue, toKvPage } from './entries';
+import { formatKvValue, parseKvCount, toKvPage } from './entries';
 
 /** One page exactly as `kv list -o json` emits it (cli/pkg/cmd/kv/common.go). */
 const response = {
@@ -78,6 +78,29 @@ describe('toKvPage', () => {
 
     it('names a keyless entry rather than rendering a blank row', () => {
         expect(toKvPage({ data: [{ value: 1 }] }).entries[0].key).toBe('(no key)');
+    });
+});
+
+describe('parseKvCount', () => {
+    // `kv count` prints a bare struct, not a slice: utils.Print marshals
+    // printableCount directly, so the payload is {"count":N}.
+    it('reads the total out of the bare struct the CLI prints', () => {
+        expect(parseKvCount({ count: 4210 })).toBe(4210);
+    });
+
+    it('treats zero as a real answer, not a missing one', () => {
+        expect(parseKvCount({ count: 0 })).toBe(0);
+    });
+
+    it('also copes with an items-wrapped shape, which the printer uses for slices', () => {
+        expect(parseKvCount({ type: 'printableCount', items: [{ count: 7 }] })).toBe(7);
+    });
+
+    it('reports nothing rather than guessing a total it cannot read', () => {
+        expect(parseKvCount(undefined)).toBeUndefined();
+        expect(parseKvCount({})).toBeUndefined();
+        expect(parseKvCount({ count: 'many' })).toBeUndefined();
+        expect(parseKvCount({ count: Number.NaN })).toBeUndefined();
     });
 });
 

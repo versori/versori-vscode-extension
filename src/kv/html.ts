@@ -17,13 +17,22 @@ export interface KvPayload {
     /**
      * Whether the last response carried a cursor in each direction.
      *
-     * Booleans, not the cursors themselves: the opaque cursors stay in the
-     * extension host, so the webview cannot mislay, mangle or invent one — it
-     * asks for a *direction* and the host resolves it.
+     * Booleans rather than the cursors themselves: the webview asks to move by
+     * *direction* and the host resolves that against its own copy, so nothing
+     * the webview sends can steer which page is fetched. (The cursors do reach
+     * the webview inside `rawJson`, since that is the verbatim response — but
+     * they are inert there: `turnPage` ignores any value a message carries.)
      */
     hasNext: boolean;
     hasPrev: boolean;
     rawJson: string;
+    error?: string;
+}
+
+/** Result of an on-demand `kv count`, posted only after the user asks for one. */
+export interface KvCountMessage {
+    type: 'count';
+    total?: number;
     error?: string;
 }
 
@@ -73,7 +82,7 @@ const KV_BODY = `
     <input type="search" id="filter" placeholder="Filter this page by key or value...">
     <span class="count" id="count"></span>
     <button id="expandAll">Expand all</button>
-    <button id="toggleRaw">Raw JSON</button>
+    <button id="toggleRaw">Raw JSON (all values)</button>
     <button id="refresh">Refresh</button>
   </div>
 
@@ -91,6 +100,8 @@ const KV_BODY = `
     <button id="prevPage">Previous</button>
     <button id="nextPage">Next</button>
     <span class="count" id="pageInfo"></span>
+    <button id="runCount">Count all</button>
+    <span class="count" id="total"></span>
   </div>
 `;
 
@@ -244,6 +255,20 @@ export const KV_SCRIPT = `
       : 'Page ' + payload.page;
   }
 
+  /**
+   * Put the raw pane away.
+   *
+   * Called on every render for the same reason renderEntries resets allOpen: the
+   * pane holds every value on the page, so leaving it open would mean each later
+   * refresh, Apply or page turn arrives with the whole payload already on screen
+   * — one deliberate click buying an unbounded number of reveals.
+   */
+  function hideRaw() {
+    el('raw').classList.remove('show');
+    el('toggleRaw').classList.remove('active');
+    el('body').style.display = '';
+  }
+
   function render() {
     if (payload.controlValues) { controlValues = payload.controlValues; }
 
@@ -251,7 +276,12 @@ export const KV_SCRIPT = `
     el('subtitle').textContent = payload.subtitle;
     el('command').textContent = '$ ' + payload.command;
     el('raw').textContent = payload.rawJson;
+    // A total belongs to the query that produced it. This render may be a
+    // different query, so the old number goes rather than sitting there looking
+    // current.
+    el('total').textContent = '';
 
+    hideRaw();
     controls();
     renderEntries();
     renderPaging();
@@ -286,6 +316,25 @@ export const KV_SCRIPT = `
     if (payload && payload.hasPrev) { vscode.postMessage({ type: 'page', direction: 'prev' }); }
   });
 
+  // On demand only, and wired to nothing else: a total costs a second CLI spawn,
+  // so loading, refreshing and paging deliberately do not ask for one.
+  el('runCount').addEventListener('click', () => {
+    el('total').textContent = 'Counting...';
+    vscode.postMessage({ type: 'count' });
+  });
+
+  function showTotal(message) {
+    if (message.error) {
+      el('total').textContent = 'Could not count: ' + message.error;
+      return;
+    }
+
+    // Says "separate" out loud: this is a second call against the whole prefix,
+    // so it can disagree with the page on screen if the store is being written.
+    el('total').textContent =
+      message.total + ' under this prefix (separate count — may differ from this page)';
+  }
+
   window.addEventListener('message', (event) => {
     const data = event.data;
     if (!data) { return; }
@@ -293,6 +342,8 @@ export const KV_SCRIPT = `
     if (data.type === 'kv') {
       payload = data.payload;
       render();
+    } else if (data.type === 'count') {
+      showTotal(data);
     }
   });
 }());

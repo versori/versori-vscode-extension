@@ -6,9 +6,9 @@ import { contextFor, projectArgs } from '../commands/target';
 import { ResolvedState } from '../resolver/types';
 import { Control, ControlValues, ENVIRONMENT_ID } from '../results/controls';
 import { redact } from '../results/rows';
-import { buildKvListArgs, KvCursor, kvControls, validateKvScope } from './args';
-import { toKvPage } from './entries';
-import { KvPayload, renderKvHtml } from './html';
+import { buildKvCountArgs, buildKvListArgs, KvCursor, kvControls, validateKvScope } from './args';
+import { parseKvCount, toKvPage } from './entries';
+import { KvCountMessage, KvPayload, renderKvHtml } from './html';
 
 export interface KvDeps {
     bin: string;
@@ -37,9 +37,13 @@ interface OpenPanel {
     /**
      * Cursors from the last successful response, held verbatim.
      *
-     * Deliberately never sent to the webview: it asks to move by *direction* and
-     * these are resolved here, so no cursor is ever reconstructed from a key —
-     * the CLI documents them as opaque and warns against exactly that.
+     * These are the only cursors that can ever reach the CLI. The webview asks
+     * to move by *direction* and `turnPage` resolves it from here, ignoring any
+     * value a message carries — so no cursor is ever reconstructed from a key,
+     * which the CLI documents as opaque and warns against.
+     *
+     * They are not secret: `rawJson` carries the response's own `pagination`
+     * block into the webview. The guarantee is that they are inert there.
      */
     nextCursor: string;
     prevCursor: string;
@@ -110,6 +114,14 @@ export async function showKvPanel(deps: KvDeps, environments: string[]): Promise
 
             if (message?.type === 'page') {
                 void turnPage(entry, message.direction);
+                return;
+            }
+
+            // Reached only from the Count button. Nothing on the load, refresh
+            // or paging paths calls this — a total is worth a second spawn only
+            // when it was asked for.
+            if (message?.type === 'count') {
+                void countEntries(entry);
             }
         },
     );
@@ -154,6 +166,57 @@ async function turnPage(entry: OpenPanel, direction: string | undefined): Promis
     }
 
     await load(entry);
+}
+
+/**
+ * The authoritative total under the current prefix, on demand.
+ *
+ * `kv list` returns a capped page and no total, so the panel cannot honestly
+ * claim one — this is the command that can. Read-only, and targeted with the
+ * *same* `targetArgs` the list query uses, so the number answers for the slice
+ * of the store on screen and not some other one.
+ */
+async function countEntries(entry: OpenPanel): Promise<void> {
+    const { deps, values } = entry;
+
+    const controlError = validateKvScope(values);
+    if (controlError) {
+        await postCount(entry, { error: controlError });
+        return;
+    }
+
+    const spec: CommandSpec = {
+        args: ['kv', 'count', ...projectArgs(deps.state), ...buildKvCountArgs(values)],
+        cwd: deps.state.projectDir,
+        context: contextFor(deps.state),
+    };
+    const command = displayCommand(spec);
+
+    try {
+        const raw = await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Window, title: 'Versori: counting KV entries' },
+            () => runJson<unknown>(deps.bin, spec),
+        );
+
+        const total = parseKvCount(raw);
+
+        deps.output.appendLine(`$ ${command}`);
+        deps.output.appendLine(total === undefined ? 'no count in the response' : `${total}`);
+
+        await postCount(
+            entry,
+            total === undefined
+                ? { error: 'the CLI returned no count' }
+                : { total },
+        );
+    } catch (err) {
+        const message = err instanceof CliError ? err.stderr || err.message : String(err);
+
+        deps.output.appendLine(`$ ${command}`);
+        deps.output.appendLine(message);
+
+        await postCount(entry, { error: message });
+    }
 }
 
 async function load(entry: OpenPanel): Promise<void> {
@@ -216,9 +279,14 @@ async function load(entry: OpenPanel): Promise<void> {
             // Both conditions matter: page 1 has nowhere to go back to, and a
             // response without a prevCursor cannot be walked backwards at all.
             hasPrev: entry.page > 1 && page.prevCursor !== '',
-            // Redacted, like every other raw view on this branch. The entry list
-            // above is not: a KV value is the data the user came to read, and the
-            // expand affordance is what keeps it off screen until asked for.
+            // redact() runs for consistency with every other raw view on this
+            // branch, but be clear that it is a **no-op on KV data**: it matches
+            // secret-sounding *key names*, and this envelope's names are data,
+            // pagination, key, value, versionstamp, createdAt, expiresAt. None
+            // match, so this pane holds every value on the page in full. What
+            // keeps it honest is that the pane is closed by default and
+            // re-closed on every render (see hideRaw in html.ts) — a deliberate
+            // act each time, never one click that keeps paying out.
             rawJson: JSON.stringify(redact(raw), null, 2),
         });
     } catch (err) {
@@ -239,6 +307,14 @@ async function load(entry: OpenPanel): Promise<void> {
 
 function post(entry: OpenPanel, payload: KvPayload): Thenable<boolean> {
     return entry.panel.webview.postMessage({ type: 'kv', payload });
+}
+
+function postCount(
+    entry: OpenPanel,
+    result: { total?: number; error?: string },
+): Thenable<boolean> {
+    const message: KvCountMessage = { type: 'count', ...result };
+    return entry.panel.webview.postMessage(message);
 }
 
 function subtitle(state: ResolvedState): string {

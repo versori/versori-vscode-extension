@@ -87,16 +87,15 @@ export function kvControls(environments: string[]): Control[] {
 }
 
 /**
- * Flags for `kv list` in friendly mode.
+ * What both read commands aim at: the scope, its environment, the identifier
+ * that scope requires, and the key prefix.
  *
- * `--prefix` is a repeatable **segment** flag, not a single path, so a
- * slash-delimited entry is split. `--scope` and `--store` are mutually
- * exclusive; this only ever uses `--scope`.
- *
- * Read-only by construction: `kv list` is the only subcommand this builds for,
- * and no flag here writes anything.
+ * Shared rather than restated so a count can never answer for a different slice
+ * of the store than the list on screen. `--prefix` is a repeatable **segment**
+ * flag, not a single path, so a slash-delimited entry is split. `--scope` and
+ * `--store` are mutually exclusive; this only ever uses `--scope`.
  */
-export function buildKvListArgs(values: ControlValues, cursor: KvCursor = {}): string[] {
+function targetArgs(values: ControlValues): string[] {
     const scope = String(values.scope ?? 'project');
     const args = ['--scope', scope, ...environmentArgs(values)];
 
@@ -122,6 +121,18 @@ export function buildKvListArgs(values: ControlValues, cursor: KvCursor = {}): s
         args.push('--prefix', segment);
     }
 
+    return args;
+}
+
+/**
+ * Flags for `kv list` in friendly mode.
+ *
+ * Read-only by construction: `kv list` is the only subcommand this builds for,
+ * and no flag here writes anything.
+ */
+export function buildKvListArgs(values: ControlValues, cursor: KvCursor = {}): string[] {
+    const args = targetArgs(values);
+
     const limit = Number(values.limit ?? 0);
     if (Number.isFinite(limit) && limit > 0) {
         args.push('--limit', String(Math.min(Math.floor(limit), MAX_LIMIT)));
@@ -143,6 +154,25 @@ export function buildKvListArgs(values: ControlValues, cursor: KvCursor = {}): s
     }
 
     return args;
+}
+
+/**
+ * Flags for `kv count` — the authoritative total under a prefix.
+ *
+ * Targeting only. Verified against `cli/pkg/cmd/kv/count.go`, which registers
+ * just the scope flags and `--prefix`:
+ *
+ * - **No `--limit`.** The command returns a total, not a capped page, and the
+ *   flag is not registered — passing it is an unknown-flag error.
+ * - **No `--after` / `--before`.** `kv count` does not paginate, which is
+ *   precisely why it is worth a second call.
+ * - **No `--raw-values`.** Also unregistered here; it only affects how `list`
+ *   renders a value.
+ * - **No `--full-keys`.** Registered (it comes with the scope flags) but
+ *   display-only, so it cannot change a number.
+ */
+export function buildKvCountArgs(values: ControlValues): string[] {
+    return targetArgs(values);
 }
 
 /** Human-readable problem with the current selection, or undefined when valid. */
