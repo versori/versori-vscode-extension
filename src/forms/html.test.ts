@@ -246,6 +246,30 @@ function resourcesLikeSpec(): FormSpec {
     };
 }
 
+/** The sync form's shape: dry run by default and an always-on live gate. */
+function syncLikeSpec(): FormSpec {
+    return {
+        viewType: 'versori.syncForm',
+        title: 'Sync',
+        heading: 'Sync project',
+        subtitle: 'Project: Orders sync  ·  Directory: /workspace/orders',
+        dryRunFieldId: 'dryRun',
+        dryRunLabel: 'Run dry run',
+        liveLabel: 'Sync Orders sync',
+        refreshOnReopen: true,
+        confirmWhenLive: true,
+        confirmSettingId: '',
+        confirmMessage:
+            'This will overwrite local changes in "/workspace/orders" and delete local files not present in remote project "Orders sync" (01A).',
+        buildArgs: () => [],
+        successMessage: () => '',
+        fields: [
+            { kind: 'checkbox', id: 'dryRun', label: 'Dry run', value: true },
+            { kind: 'checkbox', id: 'assets', label: 'Include assets', value: false },
+        ],
+    };
+}
+
 describe('form panel script — a command with no dry run', () => {
     it('offers only the live label, since there is nothing to dry run', () => {
         const view = harness(resourcesLikeSpec());
@@ -287,6 +311,47 @@ describe('form panel script — a command with no dry run', () => {
         // Offering it here would either do nothing or, worse, disable the deploy
         // confirmation — the only other setting the panel knows how to write.
         expect(harness(resourcesLikeSpec()).dontAskOffered()).toBe(false);
+    });
+});
+
+describe('form panel script — sync', () => {
+    it('runs the default preview without confirming or offering a bypass', () => {
+        const view = harness(syncLikeSpec());
+
+        view.clickSubmit();
+
+        expect(view.confirmShown()).toBe(false);
+        expect(view.dontAskOffered()).toBe(false);
+        expect(view.posted).toEqual([
+            {
+                type: 'submit',
+                values: { dryRun: true, assets: false },
+                dontAskAgain: false,
+            },
+        ]);
+    });
+
+    it('requires the warning bar for live sync and names both destructive risks', () => {
+        const view = harness(syncLikeSpec());
+
+        view.untick(0);
+        view.clickSubmit();
+
+        expect(view.confirmShown()).toBe(true);
+        expect(view.confirmMessage()).toContain('overwrite local changes');
+        expect(view.confirmMessage()).toContain('delete local files');
+        expect(view.confirmMessage()).toContain('/workspace/orders');
+        expect(view.dontAskOffered()).toBe(false);
+        expect(view.posted).toEqual([]);
+
+        view.clickConfirmGo();
+        expect(view.posted).toEqual([
+            {
+                type: 'submit',
+                values: { dryRun: false, assets: false },
+                dontAskAgain: false,
+            },
+        ]);
     });
 });
 

@@ -278,6 +278,7 @@ async function execute(
 
         if (!dryRun) {
             vscode.window.showInformationMessage(spec.successMessage(values));
+            spec.onLiveSuccess?.();
         }
     } catch (err) {
         deps.output.appendLine(`$ ${displayCommand(cmd)}`);

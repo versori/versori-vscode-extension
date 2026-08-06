@@ -12,6 +12,7 @@ import { ResolvedState } from '../resolver/types';
 import { openResourcesForm } from '../resources/panel';
 import { ENVIRONMENT_ID, environmentArgs, environmentControl } from '../results/controls';
 import { showResults } from '../results/panel';
+import { openSyncForm } from '../sync/panel';
 import { projectArgs } from './target';
 
 export interface MenuDeps {
@@ -106,6 +107,12 @@ function buildItems(deps: MenuDeps): ActionItem[] {
         );
     }
 
+    items.push({
+        label: '$(cloud-download) Sync...',
+        description: 'pull remote files — dry run by default',
+        run: openSyncForm,
+    });
+    items.push(SEPARATOR);
     items.push({
         label: '$(plug) Connections',
         description: 'organisation-wide',

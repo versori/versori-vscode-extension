@@ -27,9 +27,9 @@ otherwise easy to miss right before a deploy.
 
 ## Menu
 
-Click the status bar item. Entries appear in this order below. Project-scoped entries only show
-when the file you are looking at is inside a synced project; the organisation-wide ones always
-show.
+Click the status bar item. Entries appear in this order below. Most project-scoped entries only
+show when the file you are looking at is inside a synced project; **Sync...** is always available
+so it can bring a project into a directory. Organisation-wide entries always show.
 
 **Dry run by default** (project-scoped) — both forms open with **Dry run** ticked, so the first
 click lists the files that would upload and changes nothing. They differ in what happens after
@@ -47,6 +47,13 @@ you untick it:
   autoscaling maximum, static IP and service account for an environment, via `projects edit`,
   behind the same in-panel confirmation bar as Deploy's danger button — unlike Deploy's, this one
   cannot be turned off with a setting
+
+**Sync...** (always available) — choose a project from `projects list`, then choose a target
+directory when it is not the current project. The form starts with **Dry run** ticked and shows
+the create/update/delete preview without changing local files. Unticking it exposes a mandatory
+confirmation bar that warns that live sync can overwrite local changes and delete local files
+missing from the remote project; only accepting that bar sends `projects sync --confirm`. There is
+no “Don't ask again” option for Sync.
 
 **Read-only** — output goes to the "Versori" output channel:
 
@@ -107,9 +114,9 @@ own field names are literally `key` and `value`, so there is nothing for it to c
 
 Every generic results table also has a **Columns** picker, instead of a silent column cap.
 
-**Deliberately excluded:** `projects sync` (its `--confirm` deletes local files), and KV
-**mutations** — `kv set` / `delete` / `wipe`. The read-only KV browser above does not change
-that; those three stay in the terminal where their safety prompts live.
+**Still deliberately excluded:** KV **mutations** — `kv set` / `delete` / `wipe`. The read-only KV
+browser above does not change that; those three stay in the terminal where their safety prompts
+live.
 
 ### A behaviour worth knowing if you also use the CLI directly
 
@@ -131,8 +138,8 @@ To install locally:
 
 ```sh
 npm run package
-npx vsce package --no-dependencies   # produces versori-vscode-0.6.0.vsix
-code --install-extension versori-vscode-0.6.0.vsix
+npx --yes @vscode/vsce package --no-dependencies   # produces versori-vscode-0.1.0.vsix
+code --install-extension versori-vscode-0.1.0.vsix
 ```
 
 ### `versori.cliPath`
@@ -158,7 +165,7 @@ npm run watch
 Only the `vscode`-free modules are unit tested. The modules that import `vscode` are kept thin
 enough that their logic lives in the tested ones, so there are no mocked VS Code namespaces.
 
-That rule now covers 21 test files (`src/**/*.test.ts`), grouped by module: `src/cli.ts`,
+That rule now covers 22 test files (`src/**/*.test.ts`), grouped by module: `src/cli.ts`,
 `src/contexts.ts`, `src/commands/target.ts`, `src/resolver/`, `src/forms/`, `src/issues/`,
 `src/kv/`, `src/logs/`, `src/resources/`, `src/results/` and `src/webview/`. This list will drift
 as the extension grows — `src/**/*.test.ts` is the source of truth, not this sentence.

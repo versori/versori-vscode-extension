@@ -48,6 +48,8 @@ export interface FormSpec {
     buildArgs: (values: FormValues) => string[];
     /** Notification text after a successful non-dry run. */
     successMessage: (values: FormValues) => string;
+    /** Optional hook after a successful non-dry run. */
+    onLiveSuccess?: () => void;
     /**
      * Checkbox whose unticked state means "this will really run". `''` when the
      * command has no dry run.
