@@ -39,6 +39,9 @@ export async function openDeployForm(deps: FormDeps): Promise<void> {
         dryRunFieldId: 'dryRun',
         dryRunLabel: 'Run dry run',
         liveLabel: 'Deploy to {environment}',
+        // Nothing here is a snapshot of remote state, and reopening should not
+        // discard a half-written version description.
+        refreshOnReopen: false,
         confirmWhenLive,
         confirmSettingId: CONFIRM_SETTING,
         confirmMessage: 'This will deploy for real to {environment}.',
@@ -97,6 +100,7 @@ export function openSaveVersionForm(deps: FormDeps): void {
         liveLabel: 'Save version',
         // A version is an inert snapshot — it makes nothing live, so the extra
         // confirmation that guards deploy would be friction without a purpose.
+        refreshOnReopen: false,
         confirmWhenLive: false,
         confirmSettingId: '',
         confirmMessage: '',
@@ -142,8 +146,18 @@ export function openSaveVersionForm(deps: FormDeps): void {
 export function show(deps: FormDeps, spec: FormSpec): void {
     const existing = openPanels.get(spec.viewType);
     if (existing) {
-        existing.reveal();
-        return;
+        if (!spec.refreshOnReopen) {
+            existing.reveal();
+            return;
+        }
+
+        // The caller has just re-read the state this spec was built from, while the
+        // open panel still holds the previous snapshot in both its fields and its
+        // `buildArgs` closure. Revealing it would submit those stale values — and
+        // for a read-modify-write command that silently reverts whatever changed
+        // in between. Losing unsubmitted keystrokes is much the cheaper harm:
+        // reopening from the menu means "show me the current config".
+        existing.dispose();
     }
 
     const panel = vscode.window.createWebviewPanel(
@@ -154,7 +168,13 @@ export function show(deps: FormDeps, spec: FormSpec): void {
     );
 
     openPanels.set(spec.viewType, panel);
-    panel.onDidDispose(() => openPanels.delete(spec.viewType));
+    // Identity-checked: a refresh disposes the previous panel for this view type,
+    // and that dispose must not evict the replacement registered just above.
+    panel.onDidDispose(() => {
+        if (openPanels.get(spec.viewType) === panel) {
+            openPanels.delete(spec.viewType);
+        }
+    });
 
     panel.webview.html = renderFormHtml(spec, crypto.randomBytes(16).toString('base64'));
 

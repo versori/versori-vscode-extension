@@ -35,6 +35,9 @@ const details = {
     ],
 };
 
+/** The id `.versori` holds, passed explicitly rather than left to the CLI's cwd lookup. */
+const PROJECT = '01JPROJECT';
+
 const current: ResourceConfig = {
     replicas: '2',
     maxReplicas: '5',
@@ -88,7 +91,7 @@ describe('buildEditArgs', () => {
         // edit.go sets Autoscaling = nil whenever --max-replicas is not > 0, on
         // every invocation. Editing a CPU limit must not silently turn it off.
         const next = { ...current, limits: { ...current.limits, cpu: '1' } };
-        const args = buildEditArgs('production', current, next);
+        const args = buildEditArgs('production', current, next, PROJECT);
 
         expect(args).toContain('--max-replicas');
         expect(args[args.indexOf('--max-replicas') + 1]).toBe('5');
@@ -97,57 +100,88 @@ describe('buildEditArgs', () => {
     });
 
     it('omits --max-replicas only when autoscaling is meant to be off', () => {
-        const args = buildEditArgs('production', current, { ...current, maxReplicas: '' });
+        const args = buildEditArgs('production', current, { ...current, maxReplicas: '' }, PROJECT);
         expect(args).not.toContain('--max-replicas');
     });
 
     it('re-sends --replicas so a config write does not reset the count', () => {
         const next = { ...current, limits: { ...current.limits, memory: '1Gi' } };
-        const args = buildEditArgs('production', current, next);
+        const args = buildEditArgs('production', current, next, PROJECT);
         expect(args[args.indexOf('--replicas') + 1]).toBe('2');
     });
 
     it('sends --service-account only when it changed, since empty removes it', () => {
-        const unchanged = buildEditArgs('production', current, {
-            ...current,
-            limits: { ...current.limits, cpu: '1' },
-        });
+        const unchanged = buildEditArgs(
+            'production',
+            current,
+            { ...current, limits: { ...current.limits, cpu: '1' } },
+            PROJECT,
+        );
         expect(unchanged).not.toContain('--service-account');
 
-        const cleared = buildEditArgs('production', current, { ...current, serviceAccount: '' });
+        const cleared = buildEditArgs(
+            'production',
+            current,
+            { ...current, serviceAccount: '' },
+            PROJECT,
+        );
         expect(cleared).toContain('--service-account');
         expect(cleared[cleared.indexOf('--service-account') + 1]).toBe('');
     });
 
     it('spells static IP with the only two literals the CLI accepts', () => {
-        expect(buildEditArgs('production', current, { ...current, staticIP: false })).toContain(
-            'disabled',
-        );
         expect(
-            buildEditArgs('production', { ...current, staticIP: false }, current),
+            buildEditArgs('production', current, { ...current, staticIP: false }, PROJECT),
+        ).toContain('disabled');
+        expect(
+            buildEditArgs('production', { ...current, staticIP: false }, current, PROJECT),
         ).toContain('enabled');
     });
 
-    it('names the environment and the command', () => {
-        const args = buildEditArgs('production', current, { ...current, staticIP: false });
+    it('names the project, the environment and the command', () => {
+        // `--project` is not optional politeness: without it `projects edit`
+        // resolves the project from cwd's .versori, so a file edited while the
+        // panel was open would send this write to a different project than the
+        // one the panel read its current values from.
+        const args = buildEditArgs('production', current, { ...current, staticIP: false }, PROJECT);
+        expect(args.slice(0, 6)).toEqual([
+            'projects',
+            'edit',
+            '--project',
+            '01JPROJECT',
+            '--environment',
+            'production',
+        ]);
+    });
+
+    it('omits --project when the id is unknown, as the other builders do', () => {
+        const args = buildEditArgs(
+            'production',
+            current,
+            { ...current, staticIP: false },
+            undefined,
+        );
+        expect(args).not.toContain('--project');
         expect(args.slice(0, 4)).toEqual(['projects', 'edit', '--environment', 'production']);
     });
 
     it('refuses an unchanged form rather than writing the config back', () => {
-        expect(() => buildEditArgs('production', current, { ...current })).toThrow(
+        expect(() => buildEditArgs('production', current, { ...current }, PROJECT)).toThrow(
             /nothing to change/i,
         );
     });
 
     it('refuses a non-numeric replica count before the CLI sees it', () => {
         expect(() =>
-            buildEditArgs('production', current, { ...current, replicas: 'two' }),
+            buildEditArgs('production', current, { ...current, replicas: 'two' }, PROJECT),
         ).toThrow(/replicas/i);
     });
 
     it('skips a resource value the user left blank, which the CLI ignores anyway', () => {
         const next = { ...current, requests: { ...current.requests, storage: '' } };
-        expect(() => buildEditArgs('production', current, next)).toThrow(/nothing to change/i);
+        expect(() => buildEditArgs('production', current, next, PROJECT)).toThrow(
+            /nothing to change/i,
+        );
     });
 });
 

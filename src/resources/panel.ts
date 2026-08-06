@@ -77,13 +77,18 @@ export async function openResourcesForm(deps: FormDeps): Promise<void> {
         dryRunFieldId: '',
         dryRunLabel: '',
         liveLabel: `Update ${environment}`,
+        // `config` below is a snapshot of the read above, and buildEditArgs
+        // re-sends replicas and autoscaling from it. Reopening must therefore
+        // rebuild the panel, or a submit would revert an out-of-band change.
+        refreshOnReopen: true,
         confirmWhenLive: true,
         // Always confirm: there is no dry run to fall back on, and no setting
         // that turning this off could belong to.
         confirmSettingId: '',
         confirmMessage: `This changes the live deployment config for ${environment}. A running environment may restart.`,
         fields: resourceFields(config),
-        buildArgs: (values) => buildEditArgs(environment, config, readResourceForm(values)),
+        buildArgs: (values) =>
+            buildEditArgs(environment, config, readResourceForm(values), deps.state.projectId),
         successMessage: () => `Updated resources for ${environment}.`,
     });
 }

@@ -125,11 +125,18 @@ function changedLimits(current: ResourceLimits, next: ResourceLimits): boolean {
  *     every invocation, so editing a CPU limit would otherwise disable it.
  *   - `--service-account` is sent **only** when it changed, because the command
  *     keys off cobra's `Changed` and an empty value removes the account.
+ *
+ * `projectId` is required rather than optional-by-omission: without `--project`,
+ * edit.go resolves the project from cwd's `.versori` (`GetFlagOrDie(".")`), so a
+ * `.versori` edited while the panel was open would send this write to a project
+ * the panel never read. The same reason `projectArgs` exists for every other
+ * command — passed as a value here to keep this module free of resolver types.
  */
 export function buildEditArgs(
     environment: string,
     current: ResourceConfig,
     next: ResourceConfig,
+    projectId: string | undefined,
 ): string[] {
     if (!hasResourceChange(current, next)) {
         throw new Error('nothing to change in this environment’s resources');
@@ -138,7 +145,11 @@ export function buildEditArgs(
     const replicas = count(next.replicas, 'replicas');
     const maxReplicas = count(next.maxReplicas, 'max replicas');
 
-    const args = ['projects', 'edit', '--environment', environment];
+    const args = ['projects', 'edit'];
+    if (projectId) {
+        args.push('--project', projectId);
+    }
+    args.push('--environment', environment);
 
     if (replicas > 0) {
         // Re-sent unchanged: the config is written whole, so a stale value here

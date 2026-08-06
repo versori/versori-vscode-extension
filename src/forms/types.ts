@@ -57,6 +57,15 @@ export interface FormSpec {
     dryRunLabel: string;
     /** Submit label once dry run is unticked. `{fieldId}` is interpolated. */
     liveLabel: string;
+    /**
+     * Rebuild the panel when the form is opened again, instead of revealing the
+     * one already open.
+     *
+     * Set by forms whose fields — and whose `buildArgs` closure — are a snapshot
+     * of remote state read at open time. Revealing such a panel would submit the
+     * first snapshot however long ago it was taken.
+     */
+    refreshOnReopen: boolean;
     /** Show the confirm bar before a live run. */
     confirmWhenLive: boolean;
     /**
