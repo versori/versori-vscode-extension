@@ -45,6 +45,13 @@ interface TestIssue {
     fields: Array<{ key: string; value: string }>;
 }
 
+interface TestBinding {
+    id: string;
+    name: string;
+    channelName: string;
+    email: string;
+}
+
 interface TestPayload {
     heading: string;
     subtitle: string;
@@ -68,6 +75,7 @@ const ELEMENT_IDS = [
     'filter',
     'refresh',
     'toggleRaw',
+    'notifications',
 ];
 
 function makeNode(tag: string): StubNode {
@@ -203,6 +211,23 @@ function harness() {
         return host;
     }
 
+    function notificationChildren(): StubNode[] {
+        return (byId.get('notifications') as StubNode).children;
+    }
+
+    function bindingRows(): StubNode[] {
+        return notificationChildren().filter((child) => child.classList.contains('entry'));
+    }
+
+    /** The trailing action row: link and create. */
+    function notificationActions(): StubNode {
+        const host = notificationChildren().find((child) => child.classList.contains('actions'));
+        if (!host) {
+            throw new Error('no notification action row');
+        }
+        return host;
+    }
+
     return {
         posted,
         rows,
@@ -217,6 +242,33 @@ function harness() {
             (onMessage as (event: { data: unknown }) => void)({
                 data: { type: 'detail', ...message },
             });
+        },
+        sendNotifications(bindings: TestBinding[], error?: string) {
+            (onMessage as (event: { data: unknown }) => void)({
+                data: { type: 'notifications', bindings, error },
+            });
+        },
+        /** Direct children of the notifications host, in render order. */
+        notificationChildren,
+        bindingRows,
+        notificationActions,
+        clickNotificationAction(label: string) {
+            const button = notificationActions().children.find(
+                (child) => child.textContent === label,
+            );
+            if (!button) {
+                throw new Error(`no "${label}" button in the notifications section`);
+            }
+            button.fire('click');
+        },
+        clickUnlink(index: number) {
+            const button = bindingRows()[index].children[0].children.find(
+                (child) => child.tag === 'button',
+            );
+            if (!button) {
+                throw new Error(`no unlink button on binding row ${index}`);
+            }
+            button.fire('click');
         },
         text(id: string): string {
             return (byId.get(id) as StubNode).textContent;
@@ -444,5 +496,133 @@ describe('issues view (executed)', () => {
         const body = view.rows();
         expect(body).toEqual([]);
         expect(view.text('count')).toBe('');
+    });
+});
+
+function binding(overrides: Partial<TestBinding> = {}): TestBinding {
+    return {
+        id: '01JBINDING',
+        name: 'production critical only',
+        channelName: 'Ops on-call',
+        email: 'ops@acme.test',
+        ...overrides,
+    };
+}
+
+describe('notifications section (executed)', () => {
+    it('labels which scope is which, because a channel is not project-scoped', () => {
+        const view = harness();
+        view.sendNotifications([binding()]);
+
+        const [title, note] = view.notificationChildren();
+        expect(title.tag).toBe('h2');
+        expect(title.textContent).toBe('Email notifications');
+        // Both scopes named: the bindings are per project + environment, but the
+        // channels they point at are organisation-wide.
+        expect(note.textContent).toContain('this project and environment');
+        expect(note.textContent).toContain('organisation-wide');
+    });
+
+    it('renders a row per binding with its label and recipient', () => {
+        const view = harness();
+        view.sendNotifications([
+            binding(),
+            binding({ id: '01JOTHER', name: 'all severities', email: 'sre@acme.test' }),
+        ]);
+
+        expect(
+            view
+                .bindingRows()
+                .map((row) => row.children[0].children.map((child) => child.textContent)),
+        ).toEqual([
+            ['production critical only', 'ops@acme.test', 'Unlink'],
+            ['all severities', 'sre@acme.test', 'Unlink'],
+        ]);
+    });
+
+    it('omits the recipient chip when the channel exposes no address', () => {
+        const view = harness();
+        view.sendNotifications([binding({ email: '' })]);
+
+        expect(
+            view.bindingRows()[0].children[0].children.map((child) => child.textContent),
+        ).toEqual(['production critical only', 'Unlink']);
+    });
+
+    it('says issues still raise when nothing is linked', () => {
+        const view = harness();
+        view.sendNotifications([]);
+
+        expect(view.bindingRows()).toEqual([]);
+        const empty = view.notificationChildren().find((child) =>
+            child.classList.contains('empty'),
+        );
+        expect(empty?.textContent).toBe(
+            'No channels linked to this environment — issues raise but do not email.',
+        );
+    });
+
+    it('reports a failed binding list in the section, still offering the actions', () => {
+        const view = harness();
+        view.sendNotifications([], 'context deadline exceeded');
+
+        expect(view.bindingRows()).toEqual([]);
+        const box = view.notificationChildren().find((child) => child.classList.contains('error'));
+        expect(box?.textContent).toBe('context deadline exceeded');
+        // The section stays usable: a link/create is how you recover from having none.
+        expect(view.notificationActions().children.map((child) => child.textContent)).toEqual([
+            'Link a channel...',
+            'Create email channel...',
+        ]);
+    });
+
+    it('posts unlink with the binding id and label, only on click', () => {
+        const view = harness();
+        view.sendNotifications([binding(), binding({ id: '01JOTHER', name: 'all severities' })]);
+
+        expect(view.posted).toEqual([]);
+        view.clickUnlink(1);
+
+        expect(view.posted).toEqual([
+            { type: 'unlink', id: '01JOTHER', label: 'all severities' },
+        ]);
+    });
+
+    it('posts link and createChannel only on their button clicks', () => {
+        const view = harness();
+        view.sendNotifications([]);
+
+        view.clickNotificationAction('Link a channel...');
+        view.clickNotificationAction('Create email channel...');
+
+        expect(view.posted).toEqual([{ type: 'link' }, { type: 'createChannel' }]);
+    });
+
+    it('never mutates as a side effect of rendering or re-rendering', () => {
+        const view = harness();
+        view.sendNotifications([binding()]);
+        view.sendNotifications([binding()]);
+        view.send(payloadWith([issue()]));
+
+        expect(view.posted).toEqual([]);
+    });
+
+    it('replaces the previous bindings rather than appending to them', () => {
+        const view = harness();
+        view.sendNotifications([binding(), binding({ id: '01JOTHER' })]);
+        view.sendNotifications([binding()]);
+
+        expect(view.bindingRows()).toHaveLength(1);
+        // One heading, one note, one row, one action row — nothing left over.
+        expect(view.notificationChildren()).toHaveLength(4);
+    });
+
+    it('leaves the issue list untouched, so a binding failure cannot blank the issues', () => {
+        const view = harness();
+        view.send(payloadWith([issue()]));
+        view.sendNotifications([], 'could not list bindings');
+
+        expect(view.rows().map((row) => row.dataset.id)).toEqual(['01JISSUE']);
+        expect(view.text('count')).toBe('1 issue');
     });
 });

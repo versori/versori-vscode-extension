@@ -2,6 +2,7 @@ import { LogField } from '../logs/entries';
 import { Control, ControlValues } from '../results/controls';
 import { ENTRY_CSS, htmlDocument } from '../webview/shell';
 import { ISSUE_SEVERITIES } from './args';
+import { BindingRow } from './notifications';
 import { IssueRow } from './rows';
 
 export interface IssuesPayload {
@@ -21,6 +22,18 @@ export interface IssueDetailMessage {
     type: 'detail';
     id: string;
     fields: LogField[];
+    error?: string;
+}
+
+/**
+ * Email delivery bindings for the selected project + environment.
+ *
+ * Posted separately from `IssuesPayload` so a failure to list bindings degrades
+ * only its own section — the issues themselves still render.
+ */
+export interface NotificationsMessage {
+    type: 'notifications';
+    bindings: BindingRow[];
     error?: string;
 }
 
@@ -305,6 +318,82 @@ export const ISSUES_SCRIPT = `
     el('body').style.display = showing ? 'none' : '';
   });
 
+  function renderNotifications(bindings, error) {
+    const host = el('notifications');
+    host.textContent = '';
+
+    const title = document.createElement('h2');
+    title.textContent = 'Email notifications';
+    host.appendChild(title);
+
+    const note = document.createElement('p');
+    note.className = 'subtitle';
+    // Say which scope is which: deleting a channel would affect other projects.
+    note.textContent =
+      'Bindings below are for this project and environment. Channels themselves are ' +
+      'organisation-wide. Issues are always visible here without a binding — linking ' +
+      'only adds email delivery.';
+    host.appendChild(note);
+
+    if (error) {
+      const box = document.createElement('div');
+      box.className = 'error';
+      box.textContent = error;
+      host.appendChild(box);
+    } else if (bindings.length === 0) {
+      const box = document.createElement('div');
+      box.className = 'empty';
+      box.textContent = 'No channels linked to this environment — issues raise but do not email.';
+      host.appendChild(box);
+    } else {
+      for (const binding of bindings) {
+        const row = document.createElement('div');
+        row.className = 'entry';
+
+        const head = document.createElement('div');
+        head.className = 'head';
+        head.style.cursor = 'default';
+
+        const name = document.createElement('span');
+        name.className = 'msg';
+        name.textContent = binding.name;
+        head.appendChild(name);
+
+        if (binding.email) {
+          const to = document.createElement('span');
+          to.className = 'kv';
+          to.textContent = binding.email;
+          head.appendChild(to);
+        }
+
+        const remove = document.createElement('button');
+        remove.textContent = 'Unlink';
+        remove.addEventListener('click', () => {
+          vscode.postMessage({ type: 'unlink', id: binding.id, label: binding.name });
+        });
+        head.appendChild(remove);
+
+        row.appendChild(head);
+        host.appendChild(row);
+      }
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+
+    const link = document.createElement('button');
+    link.textContent = 'Link a channel...';
+    link.addEventListener('click', () => { vscode.postMessage({ type: 'link' }); });
+    actions.appendChild(link);
+
+    const create = document.createElement('button');
+    create.textContent = 'Create email channel...';
+    create.addEventListener('click', () => { vscode.postMessage({ type: 'createChannel' }); });
+    actions.appendChild(create);
+
+    host.appendChild(actions);
+  }
+
   window.addEventListener('message', (event) => {
     const data = event.data;
     if (!data) { return; }
@@ -314,6 +403,8 @@ export const ISSUES_SCRIPT = `
       render();
     } else if (data.type === 'detail') {
       applyDetail(data);
+    } else if (data.type === 'notifications') {
+      renderNotifications(data.bindings, data.error);
     }
   });
 }());
