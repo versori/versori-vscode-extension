@@ -40,7 +40,17 @@ export async function openDeployForm(deps: FormDeps): Promise<void> {
         dryRunLabel: 'Run dry run',
         liveLabel: 'Deploy to {environment}',
         confirmWhenLive,
+        confirmSettingId: CONFIRM_SETTING,
         confirmMessage: 'This will deploy for real to {environment}.',
+        buildArgs: (values) =>
+            buildDeployArgs({
+                projectId: deps.state.projectId,
+                name: readString(values, 'name'),
+                description: readString(values, 'description'),
+                environment: readString(values, 'environment'),
+                dryRun: readBoolean(values, 'dryRun'),
+            }),
+        successMessage: (values) => `Deployed to ${readString(values, 'environment')}.`,
         fields: [
             {
                 kind: 'text',
@@ -88,7 +98,17 @@ export function openSaveVersionForm(deps: FormDeps): void {
         // A version is an inert snapshot — it makes nothing live, so the extra
         // confirmation that guards deploy would be friction without a purpose.
         confirmWhenLive: false,
+        confirmSettingId: '',
         confirmMessage: '',
+        buildArgs: (values) =>
+            buildVersionArgs({
+                projectId: deps.state.projectId,
+                name: readString(values, 'name'),
+                description: readString(values, 'description'),
+                dryRun: readBoolean(values, 'dryRun'),
+            }),
+        successMessage: (values) =>
+            `Saved version "${readString(values, 'name')}" — a checkpoint only, not deployed.`,
         fields: [
             {
                 kind: 'text',
@@ -119,7 +139,7 @@ export function openSaveVersionForm(deps: FormDeps): void {
     });
 }
 
-function show(deps: FormDeps, spec: FormSpec): void {
+export function show(deps: FormDeps, spec: FormSpec): void {
     const existing = openPanels.get(spec.viewType);
     if (existing) {
         existing.reveal();
@@ -148,10 +168,12 @@ function show(deps: FormDeps, spec: FormSpec): void {
             return;
         }
 
-        if (message.dontAskAgain) {
+        // Only forms that read a setting may turn it off. Otherwise ticking
+        // "Don't ask again" here would disable another command's confirmation.
+        if (message.dontAskAgain && spec.confirmSettingId) {
             await vscode.workspace
                 .getConfiguration()
-                .update(CONFIRM_SETTING, false, vscode.ConfigurationTarget.Global);
+                .update(spec.confirmSettingId, false, vscode.ConfigurationTarget.Global);
         }
 
         await execute(deps, spec, panel, message.values, message.dontAskAgain);
@@ -167,7 +189,7 @@ async function execute(
 ): Promise<void> {
     let args: string[];
     try {
-        args = argsFor(spec.viewType, values, deps.state.projectId);
+        args = spec.buildArgs(values);
     } catch (err) {
         await post(panel, false, errorText(err), confirmDisabled);
         return;
@@ -194,11 +216,7 @@ async function execute(
         await post(panel, true, result.stdout || '(no output)', confirmDisabled);
 
         if (!dryRun) {
-            vscode.window.showInformationMessage(
-                spec.viewType === 'versori.deployForm'
-                    ? `Deployed to ${readString(values, 'environment')}.`
-                    : `Saved version "${readString(values, 'name')}" — a checkpoint only, not deployed.`,
-            );
+            vscode.window.showInformationMessage(spec.successMessage(values));
         }
     } catch (err) {
         deps.output.appendLine(`$ ${displayCommand(cmd)}`);
@@ -207,27 +225,6 @@ async function execute(
 
         await post(panel, false, errorText(err), confirmDisabled);
     }
-}
-
-function argsFor(viewType: string, values: FormValues, projectId?: string): string[] {
-    const dryRun = readBoolean(values, 'dryRun');
-
-    if (viewType === 'versori.deployForm') {
-        return buildDeployArgs({
-            projectId,
-            name: readString(values, 'name'),
-            description: readString(values, 'description'),
-            environment: readString(values, 'environment'),
-            dryRun,
-        });
-    }
-
-    return buildVersionArgs({
-        projectId,
-        name: readString(values, 'name'),
-        description: readString(values, 'description'),
-        dryRun,
-    });
 }
 
 function post(

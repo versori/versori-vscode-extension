@@ -140,7 +140,7 @@ export function renderFormHtml(spec: FormSpec, nonce: string): string {
 
   <div class="confirm" id="confirm">
     <span class="msg" id="confirmMsg"></span>
-    <label class="check">
+    <label class="check" id="dontAskWrap">
       <input type="checkbox" id="dontAsk">
       <span>Don't ask again</span>
     </label>
@@ -163,6 +163,9 @@ export function renderFormHtml(spec: FormSpec, nonce: string): string {
   const el = (id) => document.getElementById(id);
   el('heading').textContent = spec.heading;
   el('subtitle').textContent = spec.subtitle;
+
+  // No setting behind this form's confirmation, so there is nothing to remember.
+  if (!spec.confirmSettingId) { el('dontAskWrap').style.display = 'none'; }
 
   const inputs = {};
   const container = el('fields');

@@ -8,6 +8,7 @@ import { openDeployForm, openSaveVersionForm } from '../forms/panel';
 import { showIssuesPanel } from '../issues/panel';
 import { showLogPanel } from '../logs/panel';
 import { ResolvedState } from '../resolver/types';
+import { openResourcesForm } from '../resources/panel';
 import { ENVIRONMENT_ID, environmentArgs, environmentControl } from '../results/controls';
 import { showResults } from '../results/panel';
 import { projectArgs } from './target';
@@ -72,6 +73,11 @@ function buildItems(deps: MenuDeps): ActionItem[] {
                 label: '$(save) Save version...',
                 description: 'checkpoint only — does not deploy',
                 run: async (deps) => openSaveVersionForm(deps),
+            },
+            {
+                label: '$(dashboard) Resources...',
+                description: 'CPU, memory, replicas, static IP',
+                run: (deps) => openResourcesForm(deps),
             },
             SEPARATOR,
             { label: '$(output) Logs', run: showLogs },

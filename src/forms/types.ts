@@ -39,7 +39,19 @@ export interface FormSpec {
     /** Context and project, shown under the heading. */
     subtitle: string;
     fields: Field[];
-    /** Checkbox whose unticked state means "this will really run". */
+    /**
+     * Argv for this form's command. Throws with a user-facing message when invalid.
+     *
+     * Dropped by `JSON.stringify` when the spec is embedded in the webview, so it
+     * stays on the extension side where the values can be validated.
+     */
+    buildArgs: (values: FormValues) => string[];
+    /** Notification text after a successful non-dry run. */
+    successMessage: (values: FormValues) => string;
+    /**
+     * Checkbox whose unticked state means "this will really run". `''` when the
+     * command has no dry run.
+     */
     dryRunFieldId: string;
     /** Submit label while dry run is ticked. */
     dryRunLabel: string;
@@ -47,6 +59,15 @@ export interface FormSpec {
     liveLabel: string;
     /** Show the confirm bar before a live run. */
     confirmWhenLive: boolean;
+    /**
+     * Setting id that `confirmWhenLive` was read from, so the confirm bar's
+     * "Don't ask again" persists to the right place.
+     *
+     * `''` when this form always confirms. The checkbox is then hidden rather
+     * than left inert — writing another command's setting from here would
+     * silently disable a confirmation the user never saw.
+     */
+    confirmSettingId: string;
     /** Warning shown in the confirm bar. `{fieldId}` is interpolated. */
     confirmMessage: string;
 }
