@@ -6,6 +6,7 @@ import { parseContextList } from '../contexts';
 import { resolveEnvironmentNames } from '../environments';
 import { openDeployForm, openSaveVersionForm } from '../forms/panel';
 import { showIssuesPanel } from '../issues/panel';
+import { showKvPanel } from '../kv/panel';
 import { showLogPanel } from '../logs/panel';
 import { ResolvedState } from '../resolver/types';
 import { openResourcesForm } from '../resources/panel';
@@ -88,6 +89,11 @@ function buildItems(deps: MenuDeps): ActionItem[] {
                 description: 'connections bound to an environment',
                 run: showStaticConnections,
             },
+            {
+                label: '$(database) KV entries',
+                description: 'read-only',
+                run: showKvEntries,
+            },
             { label: '$(history) Versions', run: showVersions },
         );
     } else {
@@ -104,6 +110,11 @@ function buildItems(deps: MenuDeps): ActionItem[] {
         label: '$(plug) Connections',
         description: 'organisation-wide',
         run: showConnections,
+    });
+    items.push({
+        label: '$(database) KV stores',
+        description: 'organisation-wide',
+        run: showKvStores,
     });
     items.push(SEPARATOR);
     items.push({
@@ -182,6 +193,32 @@ async function showVersions(deps: MenuDeps): Promise<void> {
         heading: () => 'Versions',
         baseArgs: ['projects', 'versions', 'list', ...projectArgs(deps.state)],
         preferred: ['name', 'createdAt', 'created', 'description', 'id'],
+    });
+}
+
+/**
+ * KV entries for a scope. Read-only.
+ *
+ * `kv set` / `delete` / `wipe` are deliberately absent: they mutate live
+ * workflow state and belong in the terminal, where their confirmation prompts
+ * are. See README.md.
+ */
+async function showKvEntries(deps: MenuDeps): Promise<void> {
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
+        return;
+    }
+
+    await showKvPanel(deps, environments);
+}
+
+/** KV stores in the organisation. Store ids feed the CLI's raw `--store` mode. */
+async function showKvStores(deps: MenuDeps): Promise<void> {
+    await showResults(deps, {
+        id: 'kvStores',
+        heading: () => 'KV stores',
+        baseArgs: ['kv', 'stores', 'list'],
+        preferred: ['name', 'id', 'createdAt'],
     });
 }
 
