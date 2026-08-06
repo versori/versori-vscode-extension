@@ -123,6 +123,13 @@ describe('isSecretKey', () => {
         (key) => expect(isSecretKey(key)).toBe(true),
     );
 
+    // The HTTP header conventions, which is the form these names actually take
+    // when a workflow logs a request it made.
+    it.each(['x-api-key', 'api-key', 'X-API-Key', 'cookie', 'set-cookie', 'Set-Cookie'])(
+        'flags the header spelling %s',
+        (key) => expect(isSecretKey(key)).toBe(true),
+    );
+
     it.each(['name', 'id', 'environment', 'description'])('allows %s', (key) =>
         expect(isSecretKey(key)).toBe(false),
     );
@@ -177,5 +184,13 @@ describe('redact', () => {
 
     it('leaves ordinary data untouched', () => {
         expect(redact({ a: [1, 'two', { b: true }] })).toEqual({ a: [1, 'two', { b: true }] });
+    });
+
+    it('masks the hyphenated header spellings a workflow is likely to log', () => {
+        expect(
+            redact({ fields: { headers: { 'x-api-key': 'sk-live-1', cookie: 'session=abc' } } }),
+        ).toEqual({
+            fields: { headers: { 'x-api-key': '[redacted]', cookie: '[redacted]' } },
+        });
     });
 });
