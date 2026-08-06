@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { CONTROLS_SCRIPT, FIELD_PICKER_SCRIPT } from '../webview/shell';
+import { CONTROLS_SCRIPT, FIELD_PICKER_SCRIPT, RAW_PANE_SCRIPT } from '../webview/shell';
 import { DEFAULT_COLUMNS, RESULTS_SCRIPT } from './html';
 
 /**
@@ -159,13 +159,22 @@ function harness() {
         'document',
         'window',
         'acquireVsCodeApi',
-        CONTROLS_SCRIPT + FIELD_PICKER_SCRIPT + RESULTS_SCRIPT,
+        CONTROLS_SCRIPT + FIELD_PICKER_SCRIPT + RAW_PANE_SCRIPT + RESULTS_SCRIPT,
     )(documentStub, windowStub, () => ({ postMessage: () => {} }));
 
     const columnPicker = byId.get('columnPicker') as StubNode;
     const body = byId.get('body') as StubNode;
 
     return {
+        node: (id: string) => byId.get(id) as StubNode,
+        click(id: string) {
+            (byId.get(id) as StubNode).fire('click');
+        },
+        type(needle: string) {
+            const box = byId.get('filter') as StubNode;
+            box.value = needle;
+            box.fire('input');
+        },
         sendResults(payload: TestPayload) {
             if (!onMessage) {
                 throw new Error('the script never registered a message listener');
@@ -259,5 +268,57 @@ describe('results column picker (executed)', () => {
 
         expect(view.headerTexts()).toEqual(nextCols);
         expect(view.pickerLabel()).toBe('Columns (3/3)');
+    });
+});
+
+/**
+ * Same shape as the KV panel's raw pane. This panel is the awkward member of the
+ * family: `render()` is also the filter and column-picker handler, so the reset
+ * belongs on the *payload* path, not inside `render()` — a keystroke is not a
+ * new payload and must not slam the pane shut mid-read.
+ */
+describe('the raw JSON pane (executed)', () => {
+    it('shows on demand, hiding the table behind it', () => {
+        const view = harness();
+        view.sendResults(payloadWith(columns(3)));
+        view.click('toggleRaw');
+
+        expect(view.node('raw').className).toContain('show');
+        expect(view.node('toggleRaw').className).toContain('active');
+        expect(view.node('body').style.display).toBe('none');
+    });
+
+    it('does not survive a new payload — otherwise one click exposes every later result', () => {
+        const view = harness();
+        view.sendResults(payloadWith(columns(3)));
+        view.click('toggleRaw');
+
+        // A Refresh or an Apply lands here.
+        view.sendResults(payloadWith(columns(3)));
+
+        expect(view.node('raw').className).not.toContain('show');
+        expect(view.node('toggleRaw').className).not.toContain('active');
+        expect(view.node('body').style.display).toBe('');
+    });
+
+    it('can be reopened after a new payload, so the reset is not a lockout', () => {
+        const view = harness();
+        view.sendResults(payloadWith(columns(3)));
+        view.click('toggleRaw');
+        view.sendResults(payloadWith(columns(3)));
+        view.click('toggleRaw');
+
+        expect(view.node('raw').className).toContain('show');
+    });
+
+    it('survives a client-side re-render, because typing in the filter is not new data', () => {
+        const view = harness();
+        view.sendResults(payloadWith(columns(3)));
+        view.click('toggleRaw');
+
+        view.type('col0');
+
+        expect(view.node('raw').className).toContain('show');
+        expect(view.node('body').style.display).toBe('none');
     });
 });

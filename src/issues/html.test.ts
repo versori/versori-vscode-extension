@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { RAW_PANE_SCRIPT } from '../webview/shell';
 import { ISSUE_SEVERITIES } from './args';
 import { ISSUES_SCRIPT } from './html';
 
@@ -180,7 +181,16 @@ function harness() {
         },
     };
 
-    new Function('document', 'window', 'acquireVsCodeApi', 'renderControls', ISSUES_SCRIPT)(
+    // `RAW_PANE_SCRIPT` is concatenated rather than stubbed, exactly as
+    // `htmlDocument` assembles a real panel — the raw pane's per-payload reset is
+    // the behaviour under test below.
+    new Function(
+        'document',
+        'window',
+        'acquireVsCodeApi',
+        'renderControls',
+        RAW_PANE_SCRIPT + ISSUES_SCRIPT,
+    )(
         documentStub,
         windowStub,
         () => ({ postMessage: (m: Record<string, unknown>) => void posted.push(m) }),
@@ -272,6 +282,11 @@ function harness() {
         },
         text(id: string): string {
             return (byId.get(id) as StubNode).textContent;
+        },
+        node: (id: string) => byId.get(id) as StubNode,
+        /** Fires a toolbar button by element id — `click` is issue-scoped. */
+        clickToolbar(id: string) {
+            (byId.get(id) as StubNode).fire('click');
         },
         headText(id: string): string[] {
             return rowFor(id).children[0].children.map((child) => child.textContent);
@@ -624,5 +639,45 @@ describe('notifications section (executed)', () => {
 
         expect(view.rows().map((row) => row.dataset.id)).toEqual(['01JISSUE']);
         expect(view.text('count')).toBe('1 issue');
+    });
+});
+
+/**
+ * Same shape as the KV panel's raw pane, for the same reason: leaving the pane
+ * open across renders means one click keeps every *subsequent* payload on
+ * screen, so the deliberate act stops being per-payload.
+ */
+describe('the raw JSON pane (executed)', () => {
+    it('shows on demand, hiding the issue list behind it', () => {
+        const view = harness();
+        view.send(payloadWith([issue()]));
+        view.clickToolbar('toggleRaw');
+
+        expect(view.node('raw').className).toContain('show');
+        expect(view.node('toggleRaw').className).toContain('active');
+        expect(view.node('body').style.display).toBe('none');
+    });
+
+    it('does not survive a re-render — otherwise one click exposes every later payload', () => {
+        const view = harness();
+        view.send(payloadWith([issue()]));
+        view.clickToolbar('toggleRaw');
+
+        // A Refresh, an Apply or a status change all land here.
+        view.send(payloadWith([issue()]));
+
+        expect(view.node('raw').className).not.toContain('show');
+        expect(view.node('toggleRaw').className).not.toContain('active');
+        expect(view.node('body').style.display).toBe('');
+    });
+
+    it('can be reopened after a re-render, so the reset is not a lockout', () => {
+        const view = harness();
+        view.send(payloadWith([issue()]));
+        view.clickToolbar('toggleRaw');
+        view.send(payloadWith([issue()]));
+        view.clickToolbar('toggleRaw');
+
+        expect(view.node('raw').className).toContain('show');
     });
 });

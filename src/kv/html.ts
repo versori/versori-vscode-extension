@@ -255,20 +255,6 @@ export const KV_SCRIPT = `
       : 'Page ' + payload.page;
   }
 
-  /**
-   * Put the raw pane away.
-   *
-   * Called on every render for the same reason renderEntries resets allOpen: the
-   * pane holds every value on the page, so leaving it open would mean each later
-   * refresh, Apply or page turn arrives with the whole payload already on screen
-   * — one deliberate click buying an unbounded number of reveals.
-   */
-  function hideRaw() {
-    el('raw').classList.remove('show');
-    el('toggleRaw').classList.remove('active');
-    el('body').style.display = '';
-  }
-
   function render() {
     if (payload.controlValues) { controlValues = payload.controlValues; }
 
@@ -281,7 +267,9 @@ export const KV_SCRIPT = `
     // current.
     el('total').textContent = '';
 
-    hideRaw();
+    // Shared with the log, issue and results panels — see RAW_PANE_SCRIPT. Runs
+    // on every render for the same reason renderEntries resets allOpen.
+    hideRawPane();
     controls();
     renderEntries();
     renderPaging();
@@ -300,12 +288,7 @@ export const KV_SCRIPT = `
     setExpandLabel();
   });
 
-  el('toggleRaw').addEventListener('click', () => {
-    const raw = el('raw');
-    const showing = raw.classList.toggle('show');
-    el('toggleRaw').classList.toggle('active', showing);
-    el('body').style.display = showing ? 'none' : '';
-  });
+  wireRawPane();
 
   // Direction only. The cursors themselves stay in the extension host, which is
   // what stops a key ever being passed where an opaque cursor belongs.

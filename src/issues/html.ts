@@ -305,18 +305,16 @@ export const ISSUES_SCRIPT = `
     el('command').textContent = '$ ' + payload.command;
     el('raw').textContent = payload.rawJson;
 
+    // Shared with the KV, log and results panels — see RAW_PANE_SCRIPT.
+    hideRawPane();
+
     controls();
     renderIssues();
   }
 
   el('filter').addEventListener('input', () => { if (payload) { renderIssues(); } });
   el('refresh').addEventListener('click', apply);
-  el('toggleRaw').addEventListener('click', () => {
-    const raw = el('raw');
-    const showing = raw.classList.toggle('show');
-    el('toggleRaw').classList.toggle('active', showing);
-    el('body').style.display = showing ? 'none' : '';
-  });
+  wireRawPane();
 
   function renderNotifications(bindings, error) {
     const host = el('notifications');

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { RAW_PANE_SCRIPT } from '../webview/shell';
 import { KV_SCRIPT, renderKvHtml } from './html';
 
 /**
@@ -221,7 +222,17 @@ function harness() {
         },
     };
 
-    new Function('document', 'window', 'acquireVsCodeApi', 'renderControls', KV_SCRIPT)(
+    // `RAW_PANE_SCRIPT` is concatenated rather than stubbed, exactly as
+    // `htmlDocument` assembles a real panel: the raw pane's toggle and its
+    // per-payload reset are the behaviour under test below, so a stub would
+    // assert nothing.
+    new Function(
+        'document',
+        'window',
+        'acquireVsCodeApi',
+        'renderControls',
+        RAW_PANE_SCRIPT + KV_SCRIPT,
+    )(
         documentStub,
         windowStub,
         () => ({ postMessage: (m: Record<string, unknown>) => void posted.push(m) }),

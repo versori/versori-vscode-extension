@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { RAW_PANE_SCRIPT } from '../webview/shell';
 import { LOGS_SCRIPT } from './html';
 
 /**
@@ -176,7 +177,10 @@ function harness() {
         'acquireVsCodeApi',
         'renderControls',
         'renderFieldPicker',
-        LOGS_SCRIPT,
+        // `RAW_PANE_SCRIPT` is concatenated rather than stubbed, exactly as
+        // `htmlDocument` assembles a real panel — the raw pane's per-payload
+        // reset is the behaviour under test below.
+        RAW_PANE_SCRIPT + LOGS_SCRIPT,
     )(
         documentStub,
         windowStub,
@@ -189,6 +193,10 @@ function harness() {
 
     return {
         posted,
+        node: (id: string) => byId.get(id) as StubNode,
+        click(id: string) {
+            (byId.get(id) as StubNode).fire('click');
+        },
         sendLogs(payload: TestPayload) {
             if (!onMessage) {
                 throw new Error('the script never registered a message listener');
@@ -296,5 +304,47 @@ describe('log severity chips (executed)', () => {
             type: 'filter',
             filter: { severities: [] },
         });
+    });
+});
+
+/**
+ * The raw pane matters more here than in any sibling panel: log fields are
+ * arbitrary workflow-authored data, which is the one class `redact()` cannot
+ * touch — it matches field *names*, not values. So the per-field expand is the
+ * real protection, and a raw pane that outlives its render would bypass it for
+ * every later window.
+ */
+describe('the raw JSON pane (executed)', () => {
+    it('shows on demand, hiding the entry list behind it', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.click('toggleRaw');
+
+        expect(view.node('raw').className).toContain('show');
+        expect(view.node('toggleRaw').className).toContain('active');
+        expect(view.node('body').style.display).toBe('none');
+    });
+
+    it('does not survive a re-render — otherwise one click exposes every later window', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.click('toggleRaw');
+
+        // A Refresh or an Apply lands here.
+        view.sendLogs(payloadWith(['info']));
+
+        expect(view.node('raw').className).not.toContain('show');
+        expect(view.node('toggleRaw').className).not.toContain('active');
+        expect(view.node('body').style.display).toBe('');
+    });
+
+    it('can be reopened after a re-render, so the reset is not a lockout', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.click('toggleRaw');
+        view.sendLogs(payloadWith(['info']));
+        view.click('toggleRaw');
+
+        expect(view.node('raw').className).toContain('show');
     });
 });

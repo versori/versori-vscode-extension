@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { BASE_CSS, CONTROLS_SCRIPT, FIELD_PICKER_SCRIPT, htmlDocument } from './shell';
+import {
+    BASE_CSS,
+    CONTROLS_SCRIPT,
+    FIELD_PICKER_SCRIPT,
+    htmlDocument,
+    RAW_PANE_SCRIPT,
+} from './shell';
 
 const parts = {
     nonce: 'TESTNONCE',
@@ -45,6 +51,15 @@ describe('shared scripts', () => {
     it('declare the functions panels call, so a panel cannot silently miss one', () => {
         expect(CONTROLS_SCRIPT).toContain('function renderControls(');
         expect(FIELD_PICKER_SCRIPT).toContain('function renderFieldPicker(');
+        expect(RAW_PANE_SCRIPT).toContain('function hideRawPane(');
+        expect(RAW_PANE_SCRIPT).toContain('function wireRawPane(');
+    });
+
+    it('ship the raw-pane helpers into every panel document', () => {
+        // The four panels' own tests concatenate RAW_PANE_SCRIPT themselves, so
+        // only this assertion catches the shared fragment being dropped from the
+        // real document — which would make every panel throw on its first render.
+        expect(htmlDocument(parts)).toContain(RAW_PANE_SCRIPT);
     });
 });
 

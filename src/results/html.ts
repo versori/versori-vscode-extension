@@ -220,16 +220,16 @@ export const RESULTS_SCRIPT = `
 
   el('filter').addEventListener('input', render);
   el('refresh').addEventListener('click', apply);
-  el('toggleRaw').addEventListener('click', () => {
-    const raw = el('raw');
-    const showing = raw.classList.toggle('show');
-    el('toggleRaw').classList.toggle('active', showing);
-    el('body').style.display = showing ? 'none' : '';
-  });
+  wireRawPane();
 
   window.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'results') {
       payload = event.data.payload;
+      // Shared with the KV, log and issue panels — see RAW_PANE_SCRIPT. Here the
+      // reset sits on the payload path rather than inside render(), because
+      // render() is also the filter and column-picker handler: a keystroke is
+      // not new data and must not slam the pane shut mid-read.
+      hideRawPane();
       render();
     }
   });

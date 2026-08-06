@@ -304,6 +304,11 @@ export const LOGS_SCRIPT = `
     el('command').textContent = '$ ' + payload.command;
     el('raw').textContent = payload.rawJson;
 
+    // Shared with the KV, issue and results panels — see RAW_PANE_SCRIPT. This
+    // panel needs it most: log fields are workflow-authored, so the per-field
+    // expand is the real protection and a persistent raw pane would bypass it.
+    hideRawPane();
+
     controls();
     fields();
     sevChips();
@@ -326,12 +331,7 @@ export const LOGS_SCRIPT = `
       row.querySelector('.twist').textContent = '\\u25b8';
     }
   });
-  el('toggleRaw').addEventListener('click', () => {
-    const raw = el('raw');
-    const showing = raw.classList.toggle('show');
-    el('toggleRaw').classList.toggle('active', showing);
-    el('body').style.display = showing ? 'none' : '';
-  });
+  wireRawPane();
 
   window.addEventListener('message', (event) => {
     const data = event.data;

@@ -36,6 +36,7 @@ ${parts.body}
 <script nonce="${parts.nonce}">
 ${CONTROLS_SCRIPT}
 ${FIELD_PICKER_SCRIPT}
+${RAW_PANE_SCRIPT}
 ${parts.script}
 </script>
 </body>
@@ -311,6 +312,46 @@ function renderControls(host, controls, values, onChange, onApply, controlError)
     err.textContent = controlError;
     host.appendChild(err);
   }
+}
+`;
+
+/**
+ * The Raw JSON pane, shared by every panel that has one.
+ *
+ * Two halves, and both are load-bearing:
+ *
+ * `wireRawPane()` is the toggle. Showing the pane hides the panel body, so the
+ * verbatim payload replaces the curated view rather than sitting alongside it.
+ *
+ * `hideRawPane()` is the reset every panel must run when a **new payload**
+ * arrives. The pane holds every value in that payload, so leaving it open would
+ * mean each later refresh, Apply or page turn lands with the whole response
+ * already on screen — one deliberate click buying an unbounded number of
+ * reveals. That persistence, not the button, is the thing that was ruled a
+ * violation. It matters most in the log panel, where fields are arbitrary
+ * workflow-authored data and so exactly the class `redact()` cannot protect (it
+ * matches field *names*, not values): there the per-field expand is the only
+ * real protection, and a persistent raw pane bypasses it.
+ *
+ * Hoisted here rather than written four times so the four panels cannot drift
+ * apart again — which is precisely how three of them came to be missing it.
+ * Every panel with a raw pane uses the same three element ids (`raw`,
+ * `toggleRaw`, `body`), so nothing has to be parameterised.
+ */
+export const RAW_PANE_SCRIPT = `
+function hideRawPane() {
+  document.getElementById('raw').classList.remove('show');
+  document.getElementById('toggleRaw').classList.remove('active');
+  document.getElementById('body').style.display = '';
+}
+
+function wireRawPane() {
+  const button = document.getElementById('toggleRaw');
+  button.addEventListener('click', () => {
+    const showing = document.getElementById('raw').classList.toggle('show');
+    button.classList.toggle('active', showing);
+    document.getElementById('body').style.display = showing ? 'none' : '';
+  });
 }
 `;
 
