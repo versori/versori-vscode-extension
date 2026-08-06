@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import { CliError, CommandSpec, displayCommand, runJson } from '../cli';
 import { contextFor, projectArgs } from '../commands/target';
 import { ResolvedState } from '../resolver/types';
-import { Control, ControlValues, ENVIRONMENT_ID } from '../results/controls';
+import { Control, ControlValues, ENVIRONMENT_ID, retargetValues } from '../results/controls';
 import { redact } from '../results/rows';
 import { buildKvCountArgs, buildKvListArgs, KvCursor, kvControls, validateKvScope } from './args';
 import { parseKvCount, toKvPage } from './entries';
@@ -70,6 +70,10 @@ export async function showKvPanel(deps: KvDeps, environments: string[]): Promise
         // project, and the message handler reads these on every action.
         open.deps = deps;
         open.controls = controls;
+        // ...and reconcile the held values against the new controls, or an
+        // environment from the previous project would be queried while the
+        // select displays this one's.
+        open.values = retargetValues(controls, open.values);
         rewind(open);
         await load(open);
         return;

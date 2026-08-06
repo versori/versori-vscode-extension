@@ -5,7 +5,7 @@ import { CliError, CommandSpec, displayCommand, run, runJson } from '../cli';
 import { contextFor, projectArgs } from '../commands/target';
 import { flattenDeep, LogField } from '../logs/entries';
 import { ResolvedState } from '../resolver/types';
-import { Control, ControlValues } from '../results/controls';
+import { Control, ControlValues, retargetValues } from '../results/controls';
 import { redact } from '../results/rows';
 import {
     buildIssueGetArgs,
@@ -64,6 +64,10 @@ export async function showIssuesPanel(deps: IssuesDeps, environments: string[]):
         // project, and the message handler reads these on every action.
         open.deps = deps;
         open.controls = controls;
+        // ...and reconcile the held values against the new controls, or an
+        // environment from the previous project would be queried while the
+        // select displays this one's.
+        open.values = retargetValues(controls, open.values);
         await load(open);
         return;
     }

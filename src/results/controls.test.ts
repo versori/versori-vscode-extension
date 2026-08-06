@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
     buildLogArgs,
+    Control,
     CUSTOM_RANGE,
     describeRange,
     environmentArgs,
     environmentControl,
+    ENVIRONMENT_ID,
     normaliseTime,
     RANGE_PRESETS,
+    retargetValues,
     searchControl,
     validateLogRange,
 } from './controls';
@@ -211,5 +214,121 @@ describe('buildLogArgs search', () => {
             '--limit',
             '200',
         ]);
+    });
+});
+
+/**
+ * Reconciling held control values against a fresh control set.
+ *
+ * The bug this closes: reopening a panel on a different project retargeted the
+ * controls but never the held values, so the environment select rendered project
+ * B's options while `controlValues` still held project A's environment name. No
+ * `<option>` matched, so the browser displayed option[0] while the host queried
+ * A — an error the UI could not explain.
+ */
+describe('retargetValues', () => {
+    const rangeControl: Control = {
+        kind: 'select',
+        id: 'range',
+        label: 'Time range',
+        value: '1h',
+        options: RANGE_PRESETS,
+    };
+
+    it('keeps a selection that is still valid in the new control set', () => {
+        const controls = [environmentControl(['staging', 'production'])];
+
+        expect(retargetValues(controls, { [ENVIRONMENT_ID]: 'production' })).toEqual({
+            [ENVIRONMENT_ID]: 'production',
+        });
+    });
+
+    it('falls back to the new control default when the held value is not an option', () => {
+        // Project A had 'acme-prod'; project B has no such environment.
+        const controls = [environmentControl(['dev', 'staging'])];
+
+        expect(retargetValues(controls, { [ENVIRONMENT_ID]: 'acme-prod' })).toEqual({
+            [ENVIRONMENT_ID]: 'dev',
+        });
+    });
+
+    it('drops values for controls the new set no longer has', () => {
+        const controls = [environmentControl(['dev'])];
+
+        expect(retargetValues(controls, { [ENVIRONMENT_ID]: 'dev', gone: 'stale' })).toEqual({
+            [ENVIRONMENT_ID]: 'dev',
+        });
+    });
+
+    it('supplies the default for a control that has no held value yet', () => {
+        expect(retargetValues([rangeControl], {})).toEqual({ range: '1h' });
+    });
+
+    it('leaves free-text controls alone — a search string is not project-specific', () => {
+        const controls = [searchControl()];
+
+        expect(retargetValues(controls, { search: 'order-webhook' })).toEqual({
+            search: 'order-webhook',
+        });
+    });
+
+    it('leaves number controls alone, including a limit the user lowered', () => {
+        const controls: Control[] = [
+            { kind: 'number', id: 'limit', label: 'Limit', value: 200, min: 1 },
+        ];
+
+        expect(retargetValues(controls, { limit: 50 })).toEqual({ limit: 50 });
+    });
+
+    it('leaves datetime controls alone — a custom range means the same instant anywhere', () => {
+        const controls: Control[] = [
+            { kind: 'datetime', id: 'from', label: 'From', value: '' },
+        ];
+
+        expect(retargetValues(controls, { from: '2026-08-01T09:00' })).toEqual({
+            from: '2026-08-01T09:00',
+        });
+    });
+
+    it('compares select options as strings, so a numeric held value still matches', () => {
+        const controls: Control[] = [
+            {
+                kind: 'select',
+                id: 'size',
+                label: 'Size',
+                value: '10',
+                options: [
+                    { value: '10', label: '10' },
+                    { value: '50', label: '50' },
+                ],
+            },
+        ];
+
+        expect(retargetValues(controls, { size: 50 })).toEqual({ size: 50 });
+    });
+
+    it('reconciles a whole mixed control row in one pass', () => {
+        const controls: Control[] = [
+            environmentControl(['dev', 'staging']),
+            rangeControl,
+            searchControl(),
+        ];
+
+        const held = {
+            [ENVIRONMENT_ID]: 'acme-prod',
+            range: '24h',
+            search: 'sync-orders',
+            severity: 'error',
+        };
+
+        expect(retargetValues(controls, held)).toEqual({
+            [ENVIRONMENT_ID]: 'dev',
+            range: '24h',
+            search: 'sync-orders',
+        });
+    });
+
+    it('returns an empty set for an empty control row', () => {
+        expect(retargetValues([], { [ENVIRONMENT_ID]: 'dev' })).toEqual({});
     });
 });

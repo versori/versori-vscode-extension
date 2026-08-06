@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import { CliError, CommandSpec, displayCommand, runJson } from '../cli';
 import { contextFor } from '../commands/target';
 import { ResolvedState } from '../resolver/types';
-import { Control, ControlValues } from './controls';
+import { Control, ControlValues, retargetValues } from './controls';
 import { renderResultsHtml, ResultsPayload } from './html';
 import {
     deriveColumns,
@@ -57,6 +57,11 @@ export async function showResults(deps: ResultsDeps, request: ResultsRequest): P
 
     if (existing) {
         existing.panel.reveal();
+        // Reconcile the held values against the new controls, or an environment
+        // from the previous project would be queried while the select displays
+        // this one's. Connectors and Static connections are project-scoped and
+        // carry an environment select, so both hit this.
+        existing.values = retargetValues(request.controls ?? [], existing.values);
         await load(deps, request, existing);
         return;
     }

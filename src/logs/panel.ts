@@ -12,6 +12,7 @@ import {
     environmentArgs,
     environmentControl,
     logControls,
+    retargetValues,
     searchControl,
     validateLogRange,
 } from '../results/controls';
@@ -58,6 +59,10 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
         // project, and the message handler reads these on every Refresh.
         open.deps = deps;
         open.controls = controls;
+        // ...and reconcile the held values against the new controls, or an
+        // environment from the previous project would be queried while the
+        // select displays this one's.
+        open.values = retargetValues(controls, open.values);
         await load(open);
         return;
     }

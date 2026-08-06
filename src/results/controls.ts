@@ -24,6 +24,45 @@ export type Control =
 
 export type ControlValues = Record<string, string | number>;
 
+/**
+ * Reconcile held control values against a freshly built control set.
+ *
+ * Every panel keeps its control values across a reuse (reveal-and-reload), which
+ * is what lets a chosen time range or search survive reopening the panel. But
+ * reopening from a *different* project rebuilds the controls, and a value that
+ * was valid for project A need not exist in project B. Left alone, the
+ * environment select rendered B's options while the held value was still A's
+ * name: no `<option>` matched, so the browser displayed option[0] while the host
+ * queried A — the panel querying an environment it was not displaying, producing
+ * an error the UI could not explain.
+ *
+ * So, per control:
+ * - a still-valid held value is kept, because losing a deliberate choice on
+ *   every reopen would be its own annoyance;
+ * - anything else falls back to the new control's own default;
+ * - controls that no longer exist have their values dropped, since keying the
+ *   result off `controls` means only live ids survive.
+ *
+ * Only `select` can be invalid — it is the one kind with a closed set of
+ * options. Free-text, number and datetime controls (prefix, externalId, search,
+ * limit, a custom time range) mean the same thing in any project, so they are
+ * deliberately passed through untouched.
+ */
+export function retargetValues(controls: Control[], values: ControlValues): ControlValues {
+    return Object.fromEntries(
+        controls.map((control): [string, string | number] => {
+            const held = values[control.id];
+            // String() on both sides: a select's options are strings, while a
+            // held value may have arrived as a number.
+            const valid =
+                control.kind !== 'select' ||
+                control.options.some((option) => option.value === String(held));
+
+            return [control.id, valid && held !== undefined ? held : control.value];
+        }),
+    );
+}
+
 export const CUSTOM_RANGE = 'custom';
 
 /**
