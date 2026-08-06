@@ -12,7 +12,15 @@ export interface ShowWhen {
 export type Control =
     | { kind: 'select'; id: string; label: string; value: string; options: SelectOption[] }
     | { kind: 'datetime'; id: string; label: string; value: string; showWhen?: ShowWhen }
-    | { kind: 'number'; id: string; label: string; value: number; min?: number };
+    | { kind: 'number'; id: string; label: string; value: number; min?: number }
+    | {
+          kind: 'text';
+          id: string;
+          label: string;
+          value: string;
+          placeholder?: string;
+          showWhen?: ShowWhen;
+      };
 
 export type ControlValues = Record<string, string | number>;
 
@@ -84,6 +92,13 @@ export function buildLogArgs(values: ControlValues): string[] {
     const limit = Number(values.limit ?? 200);
     if (Number.isFinite(limit) && limit > 0) {
         args.push('--limit', String(Math.floor(limit)));
+    }
+
+    // Server-side and include-only — the CLI has no exclude flag, which is why
+    // exclusion lives in src/logs/filter.ts and runs over the fetched page.
+    const search = String(values.search ?? '').trim();
+    if (search) {
+        args.push('--search', search);
     }
 
     return args;
@@ -169,4 +184,14 @@ export function logControls(): Control[] {
         },
         { kind: 'number', id: 'limit', label: 'Limit', value: 200, min: 1 },
     ];
+}
+
+export function searchControl(): Control {
+    return {
+        kind: 'text',
+        id: 'search',
+        label: 'Search (server-side)',
+        value: '',
+        placeholder: 'passed to --search',
+    };
 }

@@ -5,16 +5,9 @@ import { CliError, run, runJson } from '../cli';
 import { parseContextList } from '../contexts';
 import { resolveEnvironmentNames } from '../environments';
 import { openDeployForm, openSaveVersionForm } from '../forms/panel';
+import { showLogPanel } from '../logs/panel';
 import { ResolvedState } from '../resolver/types';
-import {
-    buildLogArgs,
-    describeRange,
-    ENVIRONMENT_ID,
-    environmentArgs,
-    environmentControl,
-    logControls,
-    validateLogRange,
-} from '../results/controls';
+import { ENVIRONMENT_ID, environmentArgs, environmentControl } from '../results/controls';
 import { showResults } from '../results/panel';
 import { projectArgs } from './target';
 
@@ -115,25 +108,7 @@ async function showLogs(deps: MenuDeps): Promise<void> {
         return;
     }
 
-    await showResults(deps, {
-        id: 'logs',
-        heading: (values) =>
-            `Logs · ${values[ENVIRONMENT_ID]} · ${describeRange(values)}`,
-        baseArgs: ['projects', 'logs', ...projectArgs(deps.state)],
-        controls: [environmentControl(environments), ...logControls()],
-        controlArgs: (values) => [...environmentArgs(values), ...buildLogArgs(values)],
-        validate: validateLogRange,
-        preferred: [
-            'timestamp',
-            'severity',
-            'message',
-            'error',
-            'fields.name',
-            'fields.triggerName',
-            'fields.executionId',
-        ],
-        levelColumn: 'severity',
-    });
+    await showLogPanel(deps, environments);
 }
 
 async function showIssues(deps: MenuDeps): Promise<void> {

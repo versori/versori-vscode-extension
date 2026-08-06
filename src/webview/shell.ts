@@ -269,8 +269,14 @@ function renderControls(host, controls, values, onChange, onApply, controlError)
  */
 export const FIELD_PICKER_SCRIPT = `
 function renderFieldPicker(host, label, keys, selected, onChange) {
+  // Unlike renderControls, this does not re-render itself — onChange only
+  // notifies, so the caller re-renders to refresh the count and the checkboxes.
+  // The open state therefore has to survive the rebuild, or ticking one field
+  // would close the dropdown and every field would cost two clicks.
+  const wasOpen = host.classList.contains('open');
+
   host.textContent = '';
-  host.className = 'picker';
+  host.className = wasOpen ? 'picker open' : 'picker';
 
   const toggle = document.createElement('button');
   toggle.textContent = label + ' (' + selected.length + '/' + keys.length + ')';

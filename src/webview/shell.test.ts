@@ -241,3 +241,134 @@ describe('renderControls (executed)', () => {
         expect(rebuildCount()).toBe(baseline + 1);
     });
 });
+
+/**
+ * Executes `FIELD_PICKER_SCRIPT` against a stubbed DOM.
+ *
+ * `renderFieldPicker` is the mirror image of `renderControls`: it does not
+ * re-render itself, so the caller must, to refresh the `(n/m)` count and the
+ * checkbox state. That makes surviving a re-render part of its contract.
+ */
+describe('renderFieldPicker (executed)', () => {
+    interface PickerNode {
+        className: string;
+        textContent: string;
+        type: string;
+        checked: boolean;
+        children: PickerNode[];
+        classList: { toggle(name: string): boolean; contains(name: string): boolean };
+        appendChild(child: PickerNode): void;
+        addEventListener(name: string, fn: () => void): void;
+        fire(name: string): void;
+    }
+
+    type RenderFieldPicker = (
+        host: PickerNode,
+        label: string,
+        keys: string[],
+        selected: string[],
+        onChange: (next: string[]) => void,
+    ) => void;
+
+    // `className` and `classList` share one set of classes, as they do in a real
+    // DOM — the whole point is that assigning `className` wipes what `classList`
+    // added, which is the defect under test.
+    function node(): PickerNode {
+        const listeners: Record<string, Array<() => void>> = {};
+        const classes = new Set<string>();
+        let text = '';
+
+        const self: PickerNode = {
+            get className() {
+                return [...classes].join(' ');
+            },
+            set className(value: string) {
+                classes.clear();
+                for (const name of value.split(' ').filter(Boolean)) {
+                    classes.add(name);
+                }
+            },
+            get textContent() {
+                return text;
+            },
+            set textContent(value: string) {
+                text = value;
+                if (value === '') {
+                    self.children.length = 0;
+                }
+            },
+            type: '',
+            checked: false,
+            children: [],
+            classList: {
+                toggle(name) {
+                    if (classes.has(name)) {
+                        classes.delete(name);
+                        return false;
+                    }
+                    classes.add(name);
+                    return true;
+                },
+                contains: (name) => classes.has(name),
+            },
+            appendChild(child) {
+                self.children.push(child);
+            },
+            addEventListener(name, fn) {
+                (listeners[name] ??= []).push(fn);
+            },
+            fire(name) {
+                (listeners[name] ?? []).forEach((fn) => fn());
+            },
+        };
+        return self;
+    }
+
+    const factory = new Function(
+        'document',
+        `${FIELD_PICKER_SCRIPT}\nreturn renderFieldPicker;`,
+    ) as (doc: { createElement(tag: string): PickerNode }) => RenderFieldPicker;
+    const renderFieldPicker = factory({ createElement: () => node() });
+
+    /** The toggle button is appended first, the menu last. */
+    const toggleOf = (host: PickerNode) => host.children[0];
+    const boxesOf = (host: PickerNode) =>
+        (host.children.find((child) => child.className === 'menu')?.children ?? []).map(
+            (row) => row.children[0],
+        );
+
+    it('starts closed and opens and closes on the toggle button', () => {
+        const host = node();
+        renderFieldPicker(host, 'Fields', ['a', 'b'], [], () => {});
+
+        expect(host.classList.contains('open')).toBe(false);
+
+        toggleOf(host).fire('click');
+        expect(host.classList.contains('open')).toBe(true);
+
+        toggleOf(host).fire('click');
+        expect(host.classList.contains('open')).toBe(false);
+    });
+
+    it('regression: stays open across the re-render its own onChange provokes, so ticking several fields does not cost two clicks each', () => {
+        const host = node();
+        let selected: string[] = [];
+        const render = () =>
+            renderFieldPicker(host, 'Fields', ['a', 'b'], selected, (next) => {
+                selected = next;
+                render();
+            });
+
+        render();
+        toggleOf(host).fire('click');
+
+        const box = boxesOf(host)[0];
+        box.checked = true;
+        box.fire('change');
+
+        expect(selected).toEqual(['a']);
+        // The re-render really happened — the count refreshed.
+        expect(toggleOf(host).textContent).toBe('Fields (1/2)');
+        expect(host.classList.contains('open')).toBe(true);
+    });
+});

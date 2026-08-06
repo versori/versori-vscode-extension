@@ -8,6 +8,7 @@ import {
     environmentControl,
     normaliseTime,
     RANGE_PRESETS,
+    searchControl,
     validateLogRange,
 } from './controls';
 
@@ -176,5 +177,39 @@ describe('environmentArgs', () => {
     it('emits nothing when unset, rather than an empty flag value', () => {
         expect(environmentArgs({})).toEqual([]);
         expect(environmentArgs({ environment: '' })).toEqual([]);
+    });
+});
+
+describe('searchControl', () => {
+    it('is a text control whose value becomes the CLI --search query', () => {
+        expect(searchControl()).toEqual({
+            kind: 'text',
+            id: 'search',
+            label: 'Search (server-side)',
+            value: '',
+            placeholder: 'passed to --search',
+        });
+    });
+});
+
+describe('buildLogArgs search', () => {
+    it('passes a search query to the CLI', () => {
+        expect(buildLogArgs({ range: '1h', limit: 200, search: 'get-pricing' })).toEqual([
+            '--since',
+            '1h',
+            '--limit',
+            '200',
+            '--search',
+            'get-pricing',
+        ]);
+    });
+
+    it('omits --search when blank, rather than sending an empty query', () => {
+        expect(buildLogArgs({ range: '1h', limit: 200, search: '   ' })).toEqual([
+            '--since',
+            '1h',
+            '--limit',
+            '200',
+        ]);
     });
 });
