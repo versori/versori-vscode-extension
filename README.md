@@ -45,7 +45,8 @@ you untick it:
 **A mutation behind a confirmation** (project-scoped):
 - **Resources...** — view and edit CPU/memory/storage requests and limits, replicas, the
   autoscaling maximum, static IP and service account for an environment, via `projects edit`,
-  behind a modal confirmation
+  behind the same in-panel confirmation bar as Deploy's danger button — unlike Deploy's, this one
+  cannot be turned off with a setting
 
 **Read-only** — output goes to the "Versori" output channel:
 
