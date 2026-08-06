@@ -144,7 +144,12 @@ const LOGS_BODY = `
   <pre id="raw"></pre>
 `;
 
-const LOGS_SCRIPT = `
+/**
+ * Exported so `html.test.ts` can execute it against a stubbed DOM, the same way
+ * `CONTROLS_SCRIPT` and `FIELD_PICKER_SCRIPT` are executed in `shell.test.ts`.
+ * Nothing outside the tests should reference it — `renderLogsHtml` embeds it.
+ */
+export const LOGS_SCRIPT = `
 (function () {
   const vscode = acquireVsCodeApi();
   const el = (id) => document.getElementById(id);
@@ -196,11 +201,22 @@ const LOGS_SCRIPT = `
       inlineFields, (next) => { inlineFields = next; fields(); renderEntries(); });
   }
 
+  // What this page contains, plus anything still selected that it does not.
+  // Refreshing into a window with no errors must not strand a user who had
+  // selected 'error': the filter would hide every row while no chip rendered
+  // active, and toggling another chip would not clear it. Keeping the selection
+  // rather than dropping it means an "errors only" view survives a quiet
+  // window, and the appended chip is the one click that undoes it.
+  function chipSeverities() {
+    const present = payload ? payload.severities : [];
+    return present.concat(severities.filter((s) => !present.includes(s)));
+  }
+
   function sevChips() {
     const host = el('sevs');
     host.textContent = '';
 
-    for (const severity of (payload ? payload.severities : [])) {
+    for (const severity of chipSeverities()) {
       const chip = document.createElement('button');
       chip.textContent = severity;
       chip.classList.toggle('active', severities.includes(severity));

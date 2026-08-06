@@ -33,6 +33,17 @@ interface OpenPanel {
     values: ControlValues;
     /** The fetched page. Filtering runs over this, never over another CLI call. */
     entries: LogEntry[];
+    /**
+     * Target and control set for the project the panel is currently showing.
+     *
+     * These live on the record rather than being captured by the message
+     * handler's closure: `deps.state` is a snapshot, and reopening the panel
+     * from a different project replaces it. Closing over the creating call's
+     * parameters made an in-panel Refresh re-query the project the panel was
+     * first opened from, silently flipping the subtitle back to it.
+     */
+    deps: LogsDeps;
+    controls: Control[];
 }
 
 /** Single panel, so a second invocation refreshes rather than duplicating. */
@@ -43,7 +54,11 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
 
     if (open) {
         open.panel.reveal();
-        await load(deps, open, controls);
+        // Retarget before loading: the panel may have been opened from another
+        // project, and the message handler reads these on every Refresh.
+        open.deps = deps;
+        open.controls = controls;
+        await load(open);
         return;
     }
 
@@ -54,7 +69,13 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
         { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] },
     );
 
-    const entry: OpenPanel = { panel, values: defaultValues(controls), entries: [] };
+    const entry: OpenPanel = {
+        panel,
+        values: defaultValues(controls),
+        entries: [],
+        deps,
+        controls,
+    };
     open = entry;
 
     panel.onDidDispose(() => {
@@ -68,7 +89,7 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
                 if (message.controls) {
                     entry.values = { ...entry.values, ...message.controls };
                 }
-                void load(deps, entry, controls);
+                void load(entry);
                 return;
             }
 
@@ -78,15 +99,15 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
         },
     );
 
-    await load(deps, entry, controls);
+    await load(entry);
 }
 
 function defaultValues(controls: Control[]): ControlValues {
     return Object.fromEntries(controls.map((control) => [control.id, control.value]));
 }
 
-async function load(deps: LogsDeps, entry: OpenPanel, controls: Control[]): Promise<void> {
-    const values = entry.values;
+async function load(entry: OpenPanel): Promise<void> {
+    const { deps, values, controls } = entry;
     const args = [
         'projects',
         'logs',
