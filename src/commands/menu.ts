@@ -76,7 +76,12 @@ function buildItems(deps: MenuDeps): ActionItem[] {
             SEPARATOR,
             { label: '$(output) Logs', run: showLogs },
             { label: '$(warning) Issues', run: showIssues },
-            { label: '$(server) Systems', run: showSystems },
+            { label: '$(plug) Connectors', run: showConnectors },
+            {
+                label: '$(key) Static connections',
+                description: 'connections bound to an environment',
+                run: showStaticConnections,
+            },
             { label: '$(history) Versions', run: showVersions },
         );
     } else {
@@ -89,7 +94,11 @@ function buildItems(deps: MenuDeps): ActionItem[] {
         );
     }
 
-    items.push({ label: '$(plug) Connections', run: showConnections });
+    items.push({
+        label: '$(plug) Connections',
+        description: 'organisation-wide',
+        run: showConnections,
+    });
     items.push(SEPARATOR);
     items.push({
         label: '$(gear) Switch context...',
@@ -121,20 +130,43 @@ async function showIssues(deps: MenuDeps): Promise<void> {
     await showIssuesPanel(deps, environments);
 }
 
-async function showSystems(deps: MenuDeps): Promise<void> {
+/**
+ * Connectors for an environment.
+ *
+ * "Connector" is the platform's name for what the CLI and API call a system, so
+ * the argv stays `projects systems` while the label matches the web app. Do not
+ * "fix" the mismatch — the CLI has no `connectors` command.
+ */
+async function showConnectors(deps: MenuDeps): Promise<void> {
     const environments = await resolveEnvironmentNames(deps);
     if (!environments) {
         return;
     }
 
     await showResults(deps, {
-        id: 'systems',
-        heading: (values) => `Systems · ${values[ENVIRONMENT_ID]}`,
-        // argv stays `projects systems` — Task 11 renames only what the user sees.
+        id: 'connectors',
+        heading: (values) => `Connectors · ${values[ENVIRONMENT_ID]}`,
         baseArgs: ['projects', 'systems', 'list', ...projectArgs(deps.state)],
         controls: [environmentControl(environments)],
         controlArgs: environmentArgs,
         preferred: ['name', 'id', 'templateBaseUrl'],
+    });
+}
+
+/** Static (non-dynamic) connections bound to a project environment. */
+async function showStaticConnections(deps: MenuDeps): Promise<void> {
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
+        return;
+    }
+
+    await showResults(deps, {
+        id: 'staticConnections',
+        heading: (values) => `Static connections · ${values[ENVIRONMENT_ID]}`,
+        baseArgs: ['projects', 'systems', 'list-connections', ...projectArgs(deps.state)],
+        controls: [environmentControl(environments)],
+        controlArgs: environmentArgs,
+        preferred: ['name', 'id', 'system', 'connectionTemplateId'],
     });
 }
 

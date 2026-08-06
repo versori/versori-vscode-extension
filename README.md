@@ -30,7 +30,10 @@ otherwise easy to miss right before a deploy.
 Click the status bar item.
 
 **Read-only** — output goes to the "Versori" output channel:
-Issues · Logs · Systems · Versions · Connections · Switch context
+Issues · Logs · Connectors · Static connections · Versions · Connections · Switch context
+
+The extension says **Connectors** where the CLI says `systems` — that is the platform's own
+vocabulary. The argv is unchanged (`versori projects systems list`), visible on every panel.
 
 **Guarded** — these run `--dry-run` first and show you the real file list before confirming:
 - **Deploy...** — pick environment, enter a description, review the dry-run, confirm
