@@ -44,6 +44,19 @@ export interface ResultsDeps {
 interface OpenPanel {
     panel: vscode.WebviewPanel;
     values: ControlValues;
+    /**
+     * Target and request for the project the panel is currently showing.
+     *
+     * These live on the record rather than being captured by the message
+     * handler's closure: `deps.state` is a snapshot and `request.baseArgs` bakes
+     * in `--project <id>`, so closing over the creating call's copies made an
+     * in-panel Refresh after a menu reopen from another project silently revert
+     * the whole panel — subtitle included — to the project it was first opened
+     * from. Same shape already applied in logs/panel.ts, issues/panel.ts and the
+     * resources form.
+     */
+    deps: ResultsDeps;
+    request: ResultsRequest;
 }
 
 const panels = new Map<string, OpenPanel>();
@@ -57,12 +70,16 @@ export async function showResults(deps: ResultsDeps, request: ResultsRequest): P
 
     if (existing) {
         existing.panel.reveal();
+        // Retarget before loading: the panel may have been opened from another
+        // project, and the message handler reads these on every Refresh.
+        existing.deps = deps;
+        existing.request = request;
         // Reconcile the held values against the new controls, or an environment
         // from the previous project would be queried while the select displays
         // this one's. Connectors and Static connections are project-scoped and
         // carry an environment select, so both hit this.
         existing.values = retargetValues(request.controls ?? [], existing.values);
-        await load(deps, request, existing);
+        await load(existing);
         return;
     }
 
@@ -73,10 +90,14 @@ export async function showResults(deps: ResultsDeps, request: ResultsRequest): P
         { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] },
     );
 
-    const entry: OpenPanel = { panel, values: defaultValues(request.controls) };
+    const entry: OpenPanel = { panel, values: defaultValues(request.controls), deps, request };
     panels.set(request.id, entry);
 
-    panel.onDidDispose(() => panels.delete(request.id));
+    // The id, not the request: a request object captured here would be a second
+    // copy of the very thing that has to be retargeted on reuse. The id is the
+    // map key, so it is the same for every reopen of this view by construction.
+    const id = request.id;
+    panel.onDidDispose(() => panels.delete(id));
     panel.webview.html = renderResultsHtml(crypto.randomBytes(16).toString('base64'));
 
     panel.webview.onDidReceiveMessage(
@@ -87,19 +108,15 @@ export async function showResults(deps: ResultsDeps, request: ResultsRequest): P
             if (message.controls) {
                 entry.values = { ...entry.values, ...message.controls };
             }
-            void load(deps, request, entry);
+            void load(entry);
         },
     );
 
-    await load(deps, request, entry);
+    await load(entry);
 }
 
-async function load(
-    deps: ResultsDeps,
-    request: ResultsRequest,
-    entry: OpenPanel,
-): Promise<void> {
-    const values = entry.values;
+async function load(entry: OpenPanel): Promise<void> {
+    const { deps, request, values } = entry;
     const args = [...request.baseArgs, ...(request.controlArgs?.(values) ?? [])];
     const spec: CommandSpec = {
         args,
