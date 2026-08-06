@@ -12,8 +12,8 @@ export interface ResultsPayload {
     /** Per-row level class, parallel to `rows`. */
     levels: Array<string | undefined>;
     rawJson: string;
-    /** Columns omitted from the table to keep it readable. */
-    hiddenColumns?: number;
+    /** Every column the data has. `columns` is the same list; the webview chooses. */
+    allColumns: string[];
     error?: string;
     /** Query controls (e.g. the log time range). Rendered above the results. */
     controls?: Control[];
@@ -21,6 +21,15 @@ export interface ResultsPayload {
     /** Validation problem with the current control selection. */
     controlError?: string;
 }
+
+/**
+ * Columns shown before the user picks.
+ *
+ * Beyond about a dozen the table stops being readable, and `deriveColumns` has
+ * already put the preferred and most-populated ones first — so the default is
+ * the useful prefix rather than an arbitrary truncation.
+ */
+export const DEFAULT_COLUMNS = 12;
 
 /**
  * Results viewer.
@@ -78,12 +87,18 @@ const RESULTS_BODY = `
   <pre id="raw"></pre>
 `;
 
-const RESULTS_SCRIPT = `
+/**
+ * Exported so `html.test.ts` can execute it against a stubbed DOM, the same way
+ * `LOGS_SCRIPT` and `FIELD_PICKER_SCRIPT` are executed in their own test files.
+ * Nothing outside the tests should reference it — `renderResultsHtml` embeds it.
+ */
+export const RESULTS_SCRIPT = `
 (function () {
   const vscode = acquireVsCodeApi();
   const el = (id) => document.getElementById(id);
   let payload = null;
   let controlValues = {};
+  let shownColumns = null;
 
   function apply() {
     el('heading').textContent = 'Loading...';
@@ -101,11 +116,28 @@ const RESULTS_SCRIPT = `
     );
   }
 
+  function pickColumns() {
+    // Reset whenever the shape changes — a new command's columns are unrelated
+    // to the previous one's.
+    const all = payload.allColumns || [];
+    if (shownColumns === null || shownColumns.some((c) => !all.includes(c))) {
+      shownColumns = all.slice(0, ${DEFAULT_COLUMNS});
+    }
+
+    renderFieldPicker(el('columnPicker'), 'Columns', all, shownColumns, (next) => {
+      // Keep the data's own order, so ticking a column does not reshuffle the table.
+      shownColumns = all.filter((c) => next.includes(c));
+      pickColumns();
+      render();
+    });
+  }
+
   function render() {
     if (!payload) { return; }
 
     if (payload.controlValues) { controlValues = payload.controlValues; }
     controls();
+    pickColumns();
 
     el('heading').textContent = payload.heading;
     el('subtitle').textContent = payload.subtitle;
@@ -127,15 +159,12 @@ const RESULTS_SCRIPT = `
     const needle = el('filter').value.trim().toLowerCase();
     const rows = needle
       ? payload.rows.filter((row, i) =>
-          payload.columns.some((c) => String(row[c] || '').toLowerCase().includes(needle)))
+          shownColumns.some((c) => String(row[c] || '').toLowerCase().includes(needle)))
       : payload.rows;
 
-    const hidden = payload.hiddenColumns
-      ? ' · ' + payload.hiddenColumns + ' more columns in Raw JSON'
-      : '';
-    el('count').textContent = (needle
+    el('count').textContent = needle
       ? rows.length + ' of ' + payload.rows.length
-      : payload.rows.length + (payload.rows.length === 1 ? ' row' : ' rows')) + hidden;
+      : payload.rows.length + (payload.rows.length === 1 ? ' row' : ' rows');
 
     if (payload.rows.length === 0) {
       const box = document.createElement('div');
@@ -154,7 +183,7 @@ const RESULTS_SCRIPT = `
 
     const thead = document.createElement('thead');
     const headRow = document.createElement('tr');
-    for (const column of payload.columns) {
+    for (const column of shownColumns) {
       const th = document.createElement('th');
       th.textContent = column;
       headRow.appendChild(th);
@@ -168,7 +197,7 @@ const RESULTS_SCRIPT = `
       if (needle && !rows.includes(row)) { continue; }
 
       const tr = document.createElement('tr');
-      for (const column of payload.columns) {
+      for (const column of shownColumns) {
         const td = document.createElement('td');
         const value = row[column] || '';
 

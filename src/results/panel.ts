@@ -46,9 +46,6 @@ interface OpenPanel {
     values: ControlValues;
 }
 
-/** Beyond this the table stops being readable; the rest stay in Raw JSON. */
-const MAX_COLUMNS = 12;
-
 const panels = new Map<string, OpenPanel>();
 
 function defaultValues(controls: Control[] = []): ControlValues {
@@ -111,6 +108,7 @@ async function load(
         subtitle: subtitle(deps.state),
         command,
         columns: [],
+        allColumns: [],
         rows: [],
         levels: [],
         rawJson: '',
@@ -158,12 +156,10 @@ async function load(
 function toPayload(base: ResultsPayload, raw: unknown, request: ResultsRequest): ResultsPayload {
     const rows: Row[] = unwrapRows(raw).map(flattenRow);
 
-    // Cap the table: real log pages can derive 40+ heterogeneous columns.
-    // deriveColumns puts preferred and most-populated first, and the hidden
-    // count is reported so nothing disappears silently — Raw JSON has it all.
-    const allColumns = deriveColumns(rows, request.preferred);
-    const columns = allColumns.slice(0, MAX_COLUMNS);
-    const hiddenColumns = allColumns.length - columns.length;
+    // Every derived column is sent; which ones to render is the webview's
+    // decision, driven by the user's column picker. deriveColumns still puts
+    // preferred and most-populated first, so the default selection is sensible.
+    const columns = deriveColumns(rows, request.preferred);
 
     // Match case-insensitively — the CLI mixes `Name` and `name` across commands.
     const levelColumn = request.levelColumn
@@ -173,7 +169,7 @@ function toPayload(base: ResultsPayload, raw: unknown, request: ResultsRequest):
     return {
         ...base,
         columns,
-        hiddenColumns,
+        allColumns: columns,
         levelColumn,
         rows: rows.map((row) =>
             Object.fromEntries(columns.map((column) => [column, formatCell(row[column])])),
