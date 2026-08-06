@@ -1,5 +1,5 @@
 import { Control, ControlValues } from '../results/controls';
-import { htmlDocument } from '../webview/shell';
+import { ENTRY_CSS, htmlDocument } from '../webview/shell';
 import { LogEntry } from './entries';
 
 export interface LogsPayload {
@@ -31,7 +31,7 @@ export function renderLogsHtml(nonce: string): string {
     return htmlDocument({
         nonce,
         title: 'Versori logs',
-        styles: LOGS_CSS,
+        styles: ENTRY_CSS + LOGS_CSS,
         body: LOGS_BODY,
         script: LOGS_SCRIPT,
     });
@@ -59,56 +59,6 @@ const LOGS_CSS = `
   .sevs { display: flex; gap: 5px; flex-wrap: wrap; }
   .sevs button { padding: 2px 9px; border-radius: 9px; font-size: 0.85em; font-weight: 600; }
   .caseBox { display: flex; gap: 5px; align-items: center; font-size: 0.85em; }
-  .entry { border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25)); }
-  .entry.hidden { display: none; }
-  .head {
-    display: flex;
-    gap: 10px;
-    align-items: baseline;
-    padding: 5px 6px;
-    cursor: pointer;
-  }
-  .head:hover { background: var(--vscode-list-hoverBackground); }
-  .twist {
-    width: 12px;
-    flex: none;
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.8em;
-  }
-  .ts {
-    flex: none;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.85em;
-    color: var(--vscode-descriptionForeground);
-    white-space: nowrap;
-  }
-  .sev { flex: none; }
-  .msg { flex: 1; overflow-wrap: anywhere; }
-  .inline { display: flex; gap: 6px; flex-wrap: wrap; flex: none; }
-  .inline .kv {
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.8em;
-    padding: 0 5px;
-    border-radius: 2px;
-    background: rgba(128,128,128,0.15);
-    color: var(--vscode-descriptionForeground);
-    white-space: nowrap;
-  }
-  .detail { display: none; padding: 4px 6px 12px 34px; }
-  .entry.open .detail { display: block; }
-  .detail dl {
-    display: grid;
-    grid-template-columns: minmax(120px, max-content) 1fr;
-    gap: 2px 14px;
-    margin: 0;
-    font-size: 0.88em;
-  }
-  .detail dt { font-weight: 600; color: var(--vscode-descriptionForeground); }
-  .detail dd {
-    margin: 0;
-    font-family: var(--vscode-editor-font-family, monospace);
-    overflow-wrap: anywhere;
-  }
 `;
 
 const LOGS_BODY = `

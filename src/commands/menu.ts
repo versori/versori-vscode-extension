@@ -5,6 +5,7 @@ import { CliError, run, runJson } from '../cli';
 import { parseContextList } from '../contexts';
 import { resolveEnvironmentNames } from '../environments';
 import { openDeployForm, openSaveVersionForm } from '../forms/panel';
+import { showIssuesPanel } from '../issues/panel';
 import { showLogPanel } from '../logs/panel';
 import { ResolvedState } from '../resolver/types';
 import { ENVIRONMENT_ID, environmentArgs, environmentControl } from '../results/controls';
@@ -112,13 +113,12 @@ async function showLogs(deps: MenuDeps): Promise<void> {
 }
 
 async function showIssues(deps: MenuDeps): Promise<void> {
-    await showResults(deps, {
-        id: 'issues',
-        heading: () => 'Issues',
-        baseArgs: ['projects', 'issues', 'list', ...projectArgs(deps.state)],
-        preferred: ['severity', 'status', 'title', 'summary', 'createdAt', 'created'],
-        levelColumn: 'severity',
-    });
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
+        return;
+    }
+
+    await showIssuesPanel(deps, environments);
 }
 
 async function showSystems(deps: MenuDeps): Promise<void> {
