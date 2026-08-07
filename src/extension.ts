@@ -5,12 +5,18 @@ import * as vscode from 'vscode';
 
 import { findCli } from './cli';
 import { showMenu } from './commands/menu';
+import { FormDeps, openDeployForm, openSaveVersionForm } from './forms/panel';
+import { PopupSession } from './forms/popup';
 import { LocalContextResolver } from './resolver/local';
 import { ContextResolver, EMPTY_STATE, ResolvedState } from './resolver/types';
 import { VersoriStatusBar } from './statusbar';
+import { openSyncForm } from './sync/panel';
 
 const MENU_COMMAND = 'versori.showMenu';
 const CLI_PATH_SETTING = 'versori.cliPath';
+const CONTEXT_SYNC_COMMAND = 'versori.syncProjectHere';
+const CONTEXT_DEPLOY_COMMAND = 'versori.deployProject';
+const CONTEXT_SAVE_COMMAND = 'versori.saveVersion';
 
 export function activate(context: vscode.ExtensionContext): void {
     const output = vscode.window.createOutputChannel('Versori');
@@ -70,12 +76,74 @@ export function activate(context: vscode.ExtensionContext): void {
                 state: lastState,
                 output,
                 onContextChanged: invalidateAndRefresh,
+                getState: () => lastState,
             });
         }),
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('versori.showOutput', () => output.show(true)),
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand(CONTEXT_SYNC_COMMAND, async (uri: vscode.Uri) => {
+            const bin = cliPath();
+            if (!bin) {
+                await promptForCliPath();
+                return;
+            }
+
+            const popup = new PopupSession();
+            try {
+                const scope = scopeForUri(uri);
+                if (!scope) {
+                    await showContextMessage(
+                        popup,
+                        'Sync project',
+                        '$(info) Select a local Explorer folder',
+                        'This command needs a folder from the local file explorer.',
+                    );
+                    return;
+                }
+
+                await openSyncForm(
+                    {
+                        bin,
+                        state: resolver.resolve(scope.dir, scope.boundary),
+                        output,
+                        onContextChanged: invalidateAndRefresh,
+                    },
+                    popup,
+                    {
+                        preferredDirectory: scope.dir,
+                        workspaceRoot: scope.boundary,
+                        hideCreateSubfolder: true,
+                    },
+                );
+            } finally {
+                popup.dispose();
+            }
+        }),
+        vscode.commands.registerCommand(CONTEXT_DEPLOY_COMMAND, (uri: vscode.Uri) =>
+            runProjectContextForm(
+                uri,
+                'Deploy project',
+                openDeployForm,
+                cliPath,
+                resolver,
+                output,
+            ),
+        ),
+        vscode.commands.registerCommand(CONTEXT_SAVE_COMMAND, (uri: vscode.Uri) =>
+            runProjectContextForm(
+                uri,
+                'Save version',
+                openSaveVersionForm,
+                cliPath,
+                resolver,
+                output,
+            ),
+        ),
     );
 
     // --- invalidation sources -------------------------------------------------
@@ -117,6 +185,86 @@ export function deactivate(): void {
 interface Scope {
     dir: string;
     boundary?: string;
+}
+
+type ProjectContextForm = (
+    deps: FormDeps,
+    popup: PopupSession,
+) => Promise<'menu' | 'close'>;
+
+async function runProjectContextForm(
+    uri: vscode.Uri,
+    heading: string,
+    form: ProjectContextForm,
+    cliPath: () => string | undefined,
+    resolver: ContextResolver,
+    output: vscode.OutputChannel,
+): Promise<void> {
+    const bin = cliPath();
+    if (!bin) {
+        await promptForCliPath();
+        return;
+    }
+
+    const popup = new PopupSession();
+    try {
+        const scope = scopeForUri(uri);
+        if (!scope) {
+            await showContextMessage(
+                popup,
+                heading,
+                '$(info) Select a local Explorer folder',
+                'This command needs a folder from the local file explorer.',
+            );
+            return;
+        }
+
+        const state = resolver.resolve(scope.dir, scope.boundary);
+        if (!state.projectId || !state.projectDir) {
+            await showContextMessage(
+                popup,
+                heading,
+                '$(info) This folder is not a Versori project',
+                'Open a folder containing a .versori file before running this project action. No CLI command was run.',
+            );
+            return;
+        }
+
+        await form({ bin, state, output }, popup);
+    } finally {
+        popup.dispose();
+    }
+}
+
+function scopeForUri(uri: vscode.Uri | undefined): Scope | undefined {
+    if (!uri || uri.scheme !== 'file') {
+        return undefined;
+    }
+
+    return {
+        dir: uri.fsPath,
+        boundary: vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath,
+    };
+}
+
+async function showContextMessage(
+    popup: PopupSession,
+    heading: string,
+    label: string,
+    detail: string,
+): Promise<void> {
+    await popup.choose({
+        title: heading,
+        placeholder: detail,
+        items: [
+            {
+                label,
+                description: detail,
+                detail: 'No CLI command was run.',
+                value: true,
+            },
+        ],
+    });
 }
 
 /**

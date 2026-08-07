@@ -27,19 +27,114 @@ otherwise easy to miss right before a deploy.
 
 ## Menu
 
-Click the status bar item.
+Click the status bar item. Entries appear in this order below. Most project-scoped entries only
+show when the file you are looking at is inside a synced project; **Sync...** is always available
+so it can bring a project into a directory. Organisation-wide entries always show.
 
-**Read-only** — output goes to the "Versori" output channel:
-Issues · Logs · Systems · Versions · Connections · Switch context
+**One extension popup for mutations** — **Deploy**, **Save version**, **Resources**, and **Sync**
+all stay inside the same extension QuickPick. Each action moves through screens in that popup:
+**Back** returns to the previous step, while **Escape** cancels the current step or backs out to
+the previous one. Text and textarea values are entered directly in popup input screens; no
+separate panel is opened for the mutation.
 
-**Guarded** — these run `--dry-run` first and show you the real file list before confirming:
-- **Deploy...** — pick environment, enter a description, review the dry-run, confirm
-- **Save version...** — name and description collected up front, then a checkpoint that is
-  explicitly *not* deployed
+**Dry run by default** (project-scoped) — Deploy and Save version start with **Dry run** ticked,
+so the first click lists the files that would upload and changes nothing. They differ in what
+happens after you untick it:
+- **Deploy...** — pick an environment, enter the optional version name and description in the
+  popup, then review the dry run. Unticking **Dry run** and choosing the live action opens a
+  **popup confirmation screen** naming the project and environment; confirm there to run it.
+  `versori.confirmDeploy` turns that last gate off if you do not want it.
+- **Save version...** — enter the required name and description in the popup. Unticking **Dry
+  run** submits on the next click with **no extra confirmation**: a version is an inert snapshot
+  that is explicitly *not* deployed, so it does not need Deploy's gate.
 
-**Deliberately excluded:** `projects sync` (its `--confirm` deletes local files) and all KV
-mutations (`kv set` / `delete` / `wipe`). Those stay in the terminal where their safety
-prompts live.
+**A mutation behind a confirmation** (project-scoped):
+- **Resources...** — choose an environment when needed, then view and edit CPU/memory/storage
+  requests and limits, replicas, the autoscaling maximum, static IP and service account in the
+  same popup. `projects edit` always ends at a **popup confirmation screen**; this gate cannot
+  be turned off with a setting.
+
+**Sync...** (always available) — choose a project from `projects list`, then choose a workspace
+folder or select **Type another folder path**. A typed absolute or workspace-relative path is
+accepted even when the target folder has no existing `.versori`. The Sync screen starts with
+**Dry run** ticked and shows the create/update/delete preview without changing local files.
+The CLI may create a nonexistent target directory during that dry run, but it does not write
+project files until live confirmation.
+Unticking it exposes a mandatory **popup confirmation screen** warning that live sync can
+overwrite local changes and delete local files missing from the remote project; only accepting
+that warning sends `projects sync --confirm`. There is no “Don't ask again” option for Sync.
+
+**Read-only result panels remain separate** from the mutating QuickPick wizard. Their existing
+views still open outside the popup, and command output is also recorded in the "Versori" output
+channel:
+
+| Entry | Scope | Command | Notes |
+|---|---|---|---|
+| **Logs** | Project | `projects logs` | Purpose-built viewer — see below |
+| **Issues** | Project | `projects issues list` | Plus close/update and email notification channels — see below |
+| **Connectors** | Project | `projects systems list` | "Connector" is the platform's name for a system; the CLI has no `connectors` command, so the argv stays `systems` |
+| **Static connections** | Project | `projects systems list-connections` | Connections bound to an environment |
+| **KV entries** | Project | `kv list` | Read-only browser — see below |
+| **Versions** | Project | `projects versions list` | |
+| **Connections** | Organisation-wide | `connections list` | |
+| **KV stores** | Organisation-wide | `kv stores list` | |
+
+Below that, always available: **Switch context...** and **Show output log**.
+
+The extension says **Connectors** where the CLI says `systems` — that is the platform's own
+vocabulary; every panel still shows the real argv (`versori projects systems list`).
+
+### The log viewer
+
+Log records are heterogeneous key/value documents, so they are not rendered as a table. Each
+entry reads `timestamp · severity · message` as its headline, with every field one click away:
+
+- **Search (server-side)** is passed to `projects logs --search`, so it narrows what is fetched
+- **Include** and **Exclude** filter the fetched page client-side. The CLI has no exclude flag,
+  which is why exclusion happens here. Both accept comma-separated alternatives, and there is a
+  case-sensitivity toggle
+- **Severity chips** toggle levels; the set is derived from the data, not hardcoded
+- **Fields** picks which field values appear inline in each headline, also derived from the data
+- **Expand all** / **Collapse all** for the field detail under each entry
+
+### Issues
+
+Filter by environment, status, severity and page size, then expand a row for full detail.
+**Close** and **update** (status/severity) run `projects issues update` and are not modal —
+every transition is reversible with another update. The same screen carries **email
+notification channels**: create an organisation-wide channel, link it to this project and
+environment with an optional label, severities and title/message filters, or unlink it (modal
+confirmed).
+
+### KV entries
+
+Read-only browser over `kv list`, with friendly `--scope` targeting (organisation, workspace,
+project, end user, execution). Entries are **expandable**: a collapsed row shows the key and its
+`createdAt`; expanding it reveals the stored value, `expiresAt` (its TTL) and `versionstamp`.
+There is an **Expand all / Collapse all** toggle alongside the per-row twist.
+
+The search box filters **only the entries already loaded on this page** — `kv list` has no
+server-side search, so other pages are not searched. Narrow with the key prefix control instead,
+or page through with real cursor-based **Next** / **Previous**, which drive the CLI's opaque
+`--after` / `--before` flags. An on-demand **Count all** button runs `kv count` only when
+clicked; because it is a separate call, its total can go stale relative to the page on screen.
+
+Values are off-screen by default, and revealing one is a deliberate click. That is intentional:
+KV values can hold secrets, and this branch's redaction matches on key *names* — a KV entry's
+own field names are literally `key` and `value`, so there is nothing for it to catch there.
+
+Every generic results table also has a **Columns** picker, instead of a silent column cap.
+
+**Still deliberately excluded:** KV **mutations** — `kv set` / `delete` / `wipe`. The read-only KV
+browser above does not change that; those three stay in the terminal where their safety prompts
+live.
+
+### A behaviour worth knowing if you also use the CLI directly
+
+Editing resources through this extension always re-sends `--max-replicas`, because
+`projects edit` disables autoscaling whenever that flag is omitted on a given invocation. That
+means editing resources through the extension preserves autoscaling, while editing the same
+environment with a hand-typed CLI command that omits `--max-replicas` may turn it off.
 
 ## Setup
 
@@ -54,7 +149,7 @@ To install locally:
 
 ```sh
 npm run package
-npx vsce package --no-dependencies   # produces versori-vscode-0.1.0.vsix
+npx --yes @vscode/vsce package --no-dependencies   # produces versori-vscode-0.1.0.vsix
 code --install-extension versori-vscode-0.1.0.vsix
 ```
 
@@ -78,9 +173,13 @@ npm test
 npm run watch
 ```
 
-Only the `vscode`-free modules are unit tested — `src/resolver/` and `src/cli.ts`. The modules
-that import `vscode` are kept thin enough that their logic lives in the tested ones, so there
-are no mocked VS Code namespaces.
+Only the `vscode`-free modules are unit tested. The modules that import `vscode` are kept thin
+enough that their logic lives in the tested ones, so there are no mocked VS Code namespaces.
+
+That rule now covers 22 test files (`src/**/*.test.ts`), grouped by module: `src/cli.ts`,
+`src/contexts.ts`, `src/commands/target.ts`, `src/resolver/`, `src/forms/`, `src/issues/`,
+`src/kv/`, `src/logs/`, `src/resources/`, `src/results/` and `src/webview/`. This list will drift
+as the extension grows — `src/**/*.test.ts` is the source of truth, not this sentence.
 
 `src/resolver/local.test.ts` ports its cases from `pkg/cmd/config/config_test.go` in the CLI
 repo. That is deliberate: the resolver is a second implementation of precedence rules owned by

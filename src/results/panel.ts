@@ -2,8 +2,9 @@ import * as crypto from 'node:crypto';
 import * as vscode from 'vscode';
 
 import { CliError, CommandSpec, displayCommand, runJson } from '../cli';
+import { contextFor } from '../commands/target';
 import { ResolvedState } from '../resolver/types';
-import { Control, ControlValues } from './controls';
+import { Control, ControlValues, retargetValues } from './controls';
 import { renderResultsHtml, ResultsPayload } from './html';
 import {
     deriveColumns,
@@ -43,10 +44,20 @@ export interface ResultsDeps {
 interface OpenPanel {
     panel: vscode.WebviewPanel;
     values: ControlValues;
+    /**
+     * Target and request for the project the panel is currently showing.
+     *
+     * These live on the record rather than being captured by the message
+     * handler's closure: `deps.state` is a snapshot and `request.baseArgs` bakes
+     * in `--project <id>`, so closing over the creating call's copies made an
+     * in-panel Refresh after a menu reopen from another project silently revert
+     * the whole panel — subtitle included — to the project it was first opened
+     * from. Same shape already applied in logs/panel.ts, issues/panel.ts and the
+     * resources form.
+     */
+    deps: ResultsDeps;
+    request: ResultsRequest;
 }
-
-/** Beyond this the table stops being readable; the rest stay in Raw JSON. */
-const MAX_COLUMNS = 12;
 
 const panels = new Map<string, OpenPanel>();
 
@@ -59,7 +70,16 @@ export async function showResults(deps: ResultsDeps, request: ResultsRequest): P
 
     if (existing) {
         existing.panel.reveal();
-        await load(deps, request, existing);
+        // Retarget before loading: the panel may have been opened from another
+        // project, and the message handler reads these on every Refresh.
+        existing.deps = deps;
+        existing.request = request;
+        // Reconcile the held values against the new controls, or an environment
+        // from the previous project would be queried while the select displays
+        // this one's. Connectors and Static connections are project-scoped and
+        // carry an environment select, so both hit this.
+        existing.values = retargetValues(request.controls ?? [], existing.values);
+        await load(existing);
         return;
     }
 
@@ -70,10 +90,14 @@ export async function showResults(deps: ResultsDeps, request: ResultsRequest): P
         { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] },
     );
 
-    const entry: OpenPanel = { panel, values: defaultValues(request.controls) };
+    const entry: OpenPanel = { panel, values: defaultValues(request.controls), deps, request };
     panels.set(request.id, entry);
 
-    panel.onDidDispose(() => panels.delete(request.id));
+    // The id, not the request: a request object captured here would be a second
+    // copy of the very thing that has to be retargeted on reuse. The id is the
+    // map key, so it is the same for every reopen of this view by construction.
+    const id = request.id;
+    panel.onDidDispose(() => panels.delete(id));
     panel.webview.html = renderResultsHtml(crypto.randomBytes(16).toString('base64'));
 
     panel.webview.onDidReceiveMessage(
@@ -84,21 +108,21 @@ export async function showResults(deps: ResultsDeps, request: ResultsRequest): P
             if (message.controls) {
                 entry.values = { ...entry.values, ...message.controls };
             }
-            void load(deps, request, entry);
+            void load(entry);
         },
     );
 
-    await load(deps, request, entry);
+    await load(entry);
 }
 
-async function load(
-    deps: ResultsDeps,
-    request: ResultsRequest,
-    entry: OpenPanel,
-): Promise<void> {
-    const values = entry.values;
+async function load(entry: OpenPanel): Promise<void> {
+    const { deps, request, values } = entry;
     const args = [...request.baseArgs, ...(request.controlArgs?.(values) ?? [])];
-    const spec: CommandSpec = { args, cwd: deps.state.projectDir };
+    const spec: CommandSpec = {
+        args,
+        cwd: deps.state.projectDir,
+        context: contextFor(deps.state),
+    };
     const command = displayCommand(spec);
 
     const base: ResultsPayload = {
@@ -106,6 +130,7 @@ async function load(
         subtitle: subtitle(deps.state),
         command,
         columns: [],
+        allColumns: [],
         rows: [],
         levels: [],
         rawJson: '',
@@ -153,12 +178,10 @@ async function load(
 function toPayload(base: ResultsPayload, raw: unknown, request: ResultsRequest): ResultsPayload {
     const rows: Row[] = unwrapRows(raw).map(flattenRow);
 
-    // Cap the table: real log pages can derive 40+ heterogeneous columns.
-    // deriveColumns puts preferred and most-populated first, and the hidden
-    // count is reported so nothing disappears silently — Raw JSON has it all.
-    const allColumns = deriveColumns(rows, request.preferred);
-    const columns = allColumns.slice(0, MAX_COLUMNS);
-    const hiddenColumns = allColumns.length - columns.length;
+    // Every derived column is sent; which ones to render is the webview's
+    // decision, driven by the user's column picker. deriveColumns still puts
+    // preferred and most-populated first, so the default selection is sensible.
+    const columns = deriveColumns(rows, request.preferred);
 
     // Match case-insensitively — the CLI mixes `Name` and `name` across commands.
     const levelColumn = request.levelColumn
@@ -168,13 +191,25 @@ function toPayload(base: ResultsPayload, raw: unknown, request: ResultsRequest):
     return {
         ...base,
         columns,
-        hiddenColumns,
+        allColumns: columns,
         levelColumn,
         rows: rows.map((row) =>
             Object.fromEntries(columns.map((column) => [column, formatCell(row[column])])),
         ),
         levels: rows.map((row) => (levelColumn ? levelClass(row[levelColumn]) : undefined)),
-        // Redacted: `context list` embeds JWTs, and this view is user-visible.
+        // redact() runs here, but not for the reason this comment used to give:
+        // `context list` never reaches this panel — switchContext calls runJson
+        // directly and only ever extracts names from the response. The commands
+        // that could carry credential material are `connections list` and
+        // `systems list-connections`, and the Platform API redacts that
+        // **server-side**, so the protection there rests on a server guarantee
+        // rather than on anything this function does.
+        //
+        // redact() is still worth running: it matches secret-sounding key names
+        // (rows.ts:8), which is a cheap backstop if a future command returns one.
+        // It is not a guarantee — it never inspects values. The raw pane being
+        // closed on every payload (hideRawPane, webview/shell.ts) is the other
+        // half.
         rawJson: JSON.stringify(redact(raw), null, 2),
     };
 }

@@ -3,16 +3,18 @@ import * as vscode from 'vscode';
 
 import { CliError, run, runJson } from '../cli';
 import { parseContextList } from '../contexts';
-import { pickEnvironment } from '../environments';
+import { resolveEnvironmentNames } from '../environments';
 import { openDeployForm, openSaveVersionForm } from '../forms/panel';
+import { showIssuesPanel } from '../issues/panel';
+import { showKvPanel } from '../kv/panel';
+import { showLogPanel } from '../logs/panel';
 import { ResolvedState } from '../resolver/types';
-import {
-    buildLogArgs,
-    describeRange,
-    logControls,
-    validateLogRange,
-} from '../results/controls';
+import { openResourcesForm } from '../resources/panel';
+import { ENVIRONMENT_ID, environmentArgs, environmentControl } from '../results/controls';
 import { showResults } from '../results/panel';
+import { openSyncForm } from '../sync/panel';
+import { POPUP_BACK, PopupSession } from '../forms/popup';
+import { projectArgs } from './target';
 
 export interface MenuDeps {
     /** Absolute path to the versori binary. */
@@ -22,10 +24,12 @@ export interface MenuDeps {
     output: vscode.OutputChannel;
     /** Called after the active context changes, so the status bar can refresh. */
     onContextChanged: () => void;
+    /** Reads the latest resolver state before the root menu is rendered. */
+    getState: () => ResolvedState;
 }
 
 interface ActionItem extends vscode.QuickPickItem {
-    run?: (deps: MenuDeps) => Promise<void>;
+    run?: (deps: MenuDeps, popup: PopupSession) => Promise<'menu' | 'close'>;
 }
 
 const SEPARATOR: ActionItem = {
@@ -34,20 +38,34 @@ const SEPARATOR: ActionItem = {
 };
 
 export async function showMenu(deps: MenuDeps): Promise<void> {
-    const picked = await vscode.window.showQuickPick(buildItems(deps), {
-        title: menuTitle(deps.state),
-        placeHolder: 'Versori',
-        matchOnDescription: true,
-    });
-
-    if (!picked?.run) {
-        return;
-    }
-
+    const popup = new PopupSession();
     try {
-        await picked.run(deps);
-    } catch (err) {
-        await reportError(deps, err);
+        while (true) {
+            const menuDeps: MenuDeps = { ...deps, state: deps.getState() };
+            const picked = await popup.choose<ActionItem>({
+                title: menuTitle(menuDeps.state),
+                placeholder: 'Versori',
+                matchOnDescription: true,
+                items: buildItems(menuDeps).map((item) => ({ ...item, value: item })),
+            });
+
+            if (picked === undefined || picked === POPUP_BACK || !picked.run) {
+                return;
+            }
+
+            try {
+                const result = await picked.run(menuDeps, popup);
+                if (result === 'close') {
+                    return;
+                }
+            } catch (err) {
+                popup.close();
+                await reportError(menuDeps, err);
+                return;
+            }
+        }
+    } finally {
+        popup.dispose();
     }
 }
 
@@ -68,17 +86,32 @@ function buildItems(deps: MenuDeps): ActionItem[] {
             {
                 label: '$(rocket) Deploy...',
                 description: 'dry run by default',
-                run: (deps) => openDeployForm(deps),
+                run: (deps, popup) => openDeployForm(deps, popup),
             },
             {
                 label: '$(save) Save version...',
                 description: 'checkpoint only — does not deploy',
-                run: async (deps) => openSaveVersionForm(deps),
+                run: (deps, popup) => openSaveVersionForm(deps, popup),
+            },
+            {
+                label: '$(dashboard) Resources...',
+                description: 'CPU, memory, replicas, static IP',
+                run: (deps, popup) => openResourcesForm(deps, popup),
             },
             SEPARATOR,
             { label: '$(output) Logs', run: showLogs },
             { label: '$(warning) Issues', run: showIssues },
-            { label: '$(server) Systems', run: showSystems },
+            { label: '$(plug) Connectors', run: showConnectors },
+            {
+                label: '$(key) Static connections',
+                description: 'connections bound to an environment',
+                run: showStaticConnections,
+            },
+            {
+                label: '$(database) KV entries',
+                description: 'read-only',
+                run: showKvEntries,
+            },
             { label: '$(history) Versions', run: showVersions },
         );
     } else {
@@ -91,156 +124,217 @@ function buildItems(deps: MenuDeps): ActionItem[] {
         );
     }
 
-    items.push({ label: '$(plug) Connections', run: showConnections });
+    items.push({
+        label: '$(cloud-download) Sync...',
+        description: 'pull remote files — dry run by default',
+        run: openSyncForm,
+    });
+    items.push(SEPARATOR);
+    items.push({
+        label: '$(plug) Connections',
+        description: 'organisation-wide',
+        run: showConnections,
+    });
+    items.push({
+        label: '$(database) KV stores',
+        description: 'organisation-wide',
+        run: showKvStores,
+    });
     items.push(SEPARATOR);
     items.push({
         label: '$(gear) Switch context...',
         description: deps.state.activeContextName ?? 'none active',
         run: switchContext,
     });
-    items.push({ label: '$(list-flat) Show output log', run: async (d) => d.output.show(true) });
+    items.push({
+        label: '$(list-flat) Show output log',
+        run: async (d, popup) => {
+            popup.close();
+            d.output.show(true);
+            return 'close';
+        },
+    });
 
     return items;
 }
 
 /* ------------------------------------------------------------------ views */
 
+async function showLogs(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
+        return 'menu';
+    }
+
+    await showLogPanel(deps, environments);
+    return 'close';
+}
+
+async function showIssues(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
+        return 'menu';
+    }
+
+    await showIssuesPanel(deps, environments);
+    return 'close';
+}
+
 /**
- * Every project-scoped command gets `--project` explicitly rather than relying
- * on the CLI reading `.versori` from cwd. The id comes from that same file, so
- * the pinned-context override still applies (config.go requires the resolved id
- * to match `.versori`'s, which it does).
+ * Connectors for an environment.
+ *
+ * "Connector" is the platform's name for what the CLI and API call a system, so
+ * the argv stays `projects systems` while the label matches the web app. Do not
+ * "fix" the mismatch — the CLI has no `connectors` command.
  */
-function projectArgs(state: ResolvedState): string[] {
-    return state.projectId ? ['--project', state.projectId] : [];
-}
-
-async function showLogs(deps: MenuDeps): Promise<void> {
-    const environment = await pickEnvironment(deps.bin, deps.state, deps.output);
-    if (!environment) {
-        return;
+async function showConnectors(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
+        return 'menu';
     }
 
     await showResults(deps, {
-        id: 'logs',
-        heading: (values) => `Logs · ${environment} · ${describeRange(values)}`,
-        baseArgs: [
-            'projects',
-            'logs',
-            ...projectArgs(deps.state),
-            '--environment',
-            environment,
-        ],
-        controls: logControls(),
-        controlArgs: buildLogArgs,
-        validate: validateLogRange,
-        // Verified against real output: each NDJSON line is
-        // { fields:{activationId,executionId,externalUserId,level,name,triggerName},
-        //   message, severity, timestamp, error }
-        preferred: [
-            'timestamp',
-            'severity',
-            'message',
-            'error',
-            'fields.name',
-            'fields.triggerName',
-            'fields.executionId',
-        ],
-        levelColumn: 'severity',
-    });
-}
-
-async function showIssues(deps: MenuDeps): Promise<void> {
-    await showResults(deps, {
-        id: 'issues',
-        heading: () => 'Issues',
-        baseArgs: ['projects', 'issues', 'list', ...projectArgs(deps.state)],
-        preferred: ['severity', 'status', 'title', 'summary', 'createdAt', 'created'],
-        levelColumn: 'severity',
-    });
-}
-
-async function showSystems(deps: MenuDeps): Promise<void> {
-    const environment = await pickEnvironment(deps.bin, deps.state, deps.output);
-    if (!environment) {
-        return;
-    }
-
-    await showResults(deps, {
-        id: 'systems',
-        heading: () => `Systems · ${environment}`,
-        baseArgs: [
-            'projects',
-            'systems',
-            'list',
-            ...projectArgs(deps.state),
-            '--environment',
-            environment,
-        ],
+        id: 'connectors',
+        heading: (values) => `Connectors · ${values[ENVIRONMENT_ID]}`,
+        baseArgs: ['projects', 'systems', 'list', ...projectArgs(deps.state)],
+        controls: [environmentControl(environments)],
+        controlArgs: environmentArgs,
         preferred: ['name', 'id', 'templateBaseUrl'],
     });
+    return 'close';
 }
 
-async function showVersions(deps: MenuDeps): Promise<void> {
+/** Static (non-dynamic) connections bound to a project environment. */
+async function showStaticConnections(
+    deps: MenuDeps,
+    popup: PopupSession,
+): Promise<'menu' | 'close'> {
+    popup.close();
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
+        return 'menu';
+    }
+
+    await showResults(deps, {
+        id: 'staticConnections',
+        heading: (values) => `Static connections · ${values[ENVIRONMENT_ID]}`,
+        baseArgs: ['projects', 'systems', 'list-connections', ...projectArgs(deps.state)],
+        controls: [environmentControl(environments)],
+        controlArgs: environmentArgs,
+        preferred: ['name', 'id', 'system', 'connectionTemplateId'],
+    });
+    return 'close';
+}
+
+async function showVersions(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
     await showResults(deps, {
         id: 'versions',
         heading: () => 'Versions',
         baseArgs: ['projects', 'versions', 'list', ...projectArgs(deps.state)],
         preferred: ['name', 'createdAt', 'created', 'description', 'id'],
     });
+    return 'close';
 }
 
-async function showConnections(deps: MenuDeps): Promise<void> {
+/**
+ * KV entries for a scope. Read-only.
+ *
+ * `kv set` / `delete` / `wipe` are deliberately absent: they mutate live
+ * workflow state and belong in the terminal, where their confirmation prompts
+ * are. See README.md.
+ */
+async function showKvEntries(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
+        return 'menu';
+    }
+
+    await showKvPanel(deps, environments);
+    return 'close';
+}
+
+/** KV stores in the organisation. Store ids feed the CLI's raw `--store` mode. */
+async function showKvStores(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
+    await showResults(deps, {
+        id: 'kvStores',
+        heading: () => 'KV stores',
+        baseArgs: ['kv', 'stores', 'list'],
+        preferred: ['name', 'id', 'createdAt'],
+    });
+    return 'close';
+}
+
+async function showConnections(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
     // Org-scoped: `connections list` has no --project flag.
+    popup.close();
     await showResults(deps, {
         id: 'connections',
         heading: () => 'Connections',
         baseArgs: ['connections', 'list'],
         preferred: ['name', 'system', 'id'],
     });
+    return 'close';
 }
 
 /* ---------------------------------------------------------------- actions */
 
-async function switchContext(deps: MenuDeps): Promise<void> {
+async function switchContext(
+    deps: MenuDeps,
+    popup: PopupSession,
+): Promise<'menu' | 'close'> {
     // The raw response contains full JWTs — only names are ever extracted from
     // it, and it is never written to the output channel.
+    popup.loading('Switch context', 'Loading contexts…');
     const contexts = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Window, title: 'Versori: loading contexts' },
         () => runJson<unknown>(deps.bin, { args: ['context', 'list'] }),
     );
+    if (!popup.isVisible()) {
+        return 'menu';
+    }
 
     const entries = parseContextList(contexts);
     if (entries.length === 0) {
-        vscode.window.showWarningMessage('Versori: no contexts configured.');
-        return;
+        popup.close();
+        await vscode.window.showWarningMessage('Versori: no contexts configured.');
+        return 'menu';
     }
 
-    const picked = await vscode.window.showQuickPick(
-        entries.map((entry) => ({
+    const picked = await popup.choose({
+        title: 'Switch active Versori context',
+        back: true,
+        items: entries.map((entry) => ({
             label: entry.name,
             description: entry.active ? 'active' : undefined,
+            value: entry.name,
         })),
-        { title: 'Switch active Versori context' },
-    );
-    if (!picked) {
-        return;
+    });
+    if (picked === undefined || picked === POPUP_BACK) {
+        return 'menu';
     }
 
     await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Window, title: `Versori: selecting ${picked.label}` },
-        () => run(deps.bin, { args: ['context', 'select', picked.label], json: false }),
+        { location: vscode.ProgressLocation.Window, title: `Versori: selecting ${picked}` },
+        () => run(deps.bin, { args: ['context', 'select', picked], json: false }),
     );
 
     deps.onContextChanged();
+    popup.close();
 
     if (deps.state.source === 'versori-file') {
         // Honest warning: inside a project that pins a context, switching the
         // active one changes nothing for commands run here.
-        vscode.window.showInformationMessage(
-            `Active context is now "${picked.label}", but this project pins "${deps.state.contextName}" in .versori, which still wins here.`,
+        await vscode.window.showInformationMessage(
+            `Active context is now "${picked}", but this project pins "${deps.state.contextName}" in .versori, which still wins here.`,
         );
     }
+    return 'close';
 }
 
 async function reportError(deps: MenuDeps, err: unknown): Promise<void> {

@@ -7,3 +7,4 @@ vitest.config.ts
 **/*.test.ts
 **/*.map
 .gitignore
+.superpowers/**

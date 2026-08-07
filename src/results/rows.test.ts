@@ -115,11 +115,27 @@ describe('deriveColumns', () => {
 
         expect(deriveColumns(rows)).toEqual(['Name', 'OrganisationId']);
     });
+
+    it('drops columns matching the header spellings too, not just masking them', () => {
+        // isSecretKey's widened regex feeds both redact() (masks a value) and
+        // deriveColumns() (drops the column). A hyphenated or cookie-prefixed key
+        // never becomes a column at all here — see the SECRET_KEY doc comment.
+        const rows = [{ Name: 'ctx', cookieDomain: 'example.com', 'x-api-key': 'sk-live-1' }];
+
+        expect(deriveColumns(rows)).toEqual(['Name']);
+    });
 });
 
 describe('isSecretKey', () => {
     it.each(['JWT', 'jwt', 'accessToken', 'client_secret', 'apiKey', 'api_key', 'Password'])(
         'flags %s',
+        (key) => expect(isSecretKey(key)).toBe(true),
+    );
+
+    // The HTTP header conventions, which is the form these names actually take
+    // when a workflow logs a request it made.
+    it.each(['x-api-key', 'api-key', 'X-API-Key', 'cookie', 'set-cookie', 'Set-Cookie'])(
+        'flags the header spelling %s',
         (key) => expect(isSecretKey(key)).toBe(true),
     );
 
@@ -177,5 +193,13 @@ describe('redact', () => {
 
     it('leaves ordinary data untouched', () => {
         expect(redact({ a: [1, 'two', { b: true }] })).toEqual({ a: [1, 'two', { b: true }] });
+    });
+
+    it('masks the hyphenated header spellings a workflow is likely to log', () => {
+        expect(
+            redact({ fields: { headers: { 'x-api-key': 'sk-live-1', cookie: 'session=abc' } } }),
+        ).toEqual({
+            fields: { headers: { 'x-api-key': '[redacted]', cookie: '[redacted]' } },
+        });
     });
 });

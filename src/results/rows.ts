@@ -3,9 +3,23 @@
  *
  * `versori context list -o json` returns full JWTs; other commands may embed
  * credentials. Redaction is by key name because the values themselves are not
- * reliably recognisable.
+ * reliably recognisable — which also means this is a backstop, never a
+ * guarantee: a workflow that logs a credential under a name nobody anticipated
+ * is not caught, and no version of this regex could catch it.
+ *
+ * `api[-_]?key` rather than `apikey|api_key` so the HTTP header spellings
+ * (`x-api-key`, `api-key`) match too, and `cookie` covers `set-cookie` as a
+ * substring — those are the forms these names actually take when a workflow logs
+ * a request it made.
+ *
+ * This regex backs both consumers below, and they diverge on purpose: `redact()`
+ * masks a matching value, `deriveColumns()` drops the whole column. So widening
+ * the pattern to catch header spellings also makes a matching column (e.g.
+ * `cookieDomain`, `api-key-id`) vanish from the table rather than showing
+ * `[redacted]` — fail-safe, but worth knowing before widening it further.
  */
-const SECRET_KEY = /jwt|token|secret|password|passwd|apikey|api_key|credential|authorization/i;
+const SECRET_KEY =
+    /jwt|token|secret|password|passwd|api[-_]?key|credential|authorization|cookie/i;
 
 export function isSecretKey(key: string): boolean {
     return SECRET_KEY.test(key);
