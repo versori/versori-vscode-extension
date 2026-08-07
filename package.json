@@ -26,8 +26,39 @@
       {
         "command": "versori.showOutput",
         "title": "Versori: Show Output"
+      },
+      {
+        "command": "versori.syncProjectHere",
+        "title": "Versori: Sync Project Here"
+      },
+      {
+        "command": "versori.deployProject",
+        "title": "Versori: Deploy Project"
+      },
+      {
+        "command": "versori.saveVersion",
+        "title": "Versori: Save Version"
       }
     ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "versori.syncProjectHere",
+          "when": "explorerResourceIsFolder",
+          "group": "versori"
+        },
+        {
+          "command": "versori.deployProject",
+          "when": "explorerResourceIsFolder",
+          "group": "versori"
+        },
+        {
+          "command": "versori.saveVersion",
+          "when": "explorerResourceIsFolder",
+          "group": "versori"
+        }
+      ]
+    },
     "configuration": {
       "title": "Versori",
       "properties": {

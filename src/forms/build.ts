@@ -1,4 +1,4 @@
-import { Field, FormValues } from './types';
+import { Field, FormMessage, FormValues } from './types';
 
 export interface DeployValues {
     /** Resolved from `.versori`; passed explicitly rather than relying on cwd. */
@@ -96,7 +96,11 @@ export function buildVersionArgs(values: VersionValues): string[] {
 /** Ids of required fields left blank. Empty means the form may be submitted. */
 export function missingRequired(fields: Field[], values: FormValues): string[] {
     return fields
-        .filter((field) => (field.kind === 'text' || field.kind === 'textarea') && field.required)
+        .filter(
+            (field) =>
+                (field.kind === 'text' || field.kind === 'textarea') &&
+                requiredForValues(field.required, values),
+        )
         .filter((field) => !String(values[field.id] ?? '').trim())
         .map((field) => field.id);
 }
@@ -109,6 +113,22 @@ export function interpolate(template: string, values: FormValues): string {
     });
 }
 
+/** Resolve a legacy interpolated message or a callback using current values. */
+export function resolveFormMessage(message: FormMessage, values: FormValues): string {
+    return typeof message === 'function' ? message(values) : interpolate(message, values);
+}
+
+/**
+ * Split a multi-line confirmation into a modal headline + body.
+ * QuickPick rows truncate detail; native warning modals show both clearly.
+ */
+export function splitConfirmDialog(message: string): { message: string; detail: string } {
+    const lines = message.split(/\r?\n/);
+    const headline = lines[0]?.trim() || 'Are you sure?';
+    const detail = lines.slice(1).join('\n').replace(/^\n+/, '').trim();
+    return { message: headline, detail };
+}
+
 export function readString(values: FormValues, id: string): string {
     const value = values[id];
     return typeof value === 'string' ? value : '';
@@ -116,4 +136,11 @@ export function readString(values: FormValues, id: string): string {
 
 export function readBoolean(values: FormValues, id: string): boolean {
     return values[id] === true;
+}
+
+function requiredForValues(
+    required: boolean | ((values: FormValues) => boolean) | undefined,
+    values: FormValues,
+): boolean {
+    return typeof required === 'function' ? required(values) : required === true;
 }

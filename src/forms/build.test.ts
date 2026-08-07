@@ -5,6 +5,8 @@ import {
     buildVersionArgs,
     interpolate,
     missingRequired,
+    resolveFormMessage,
+    splitConfirmDialog,
 } from './build';
 import { Field } from './types';
 
@@ -150,6 +152,31 @@ describe('missingRequired', () => {
     it('counts whitespace as blank', () => {
         expect(missingRequired(fields, { name: '   ', description: 'b' })).toEqual(['name']);
     });
+
+    it('supports fields required only for a matching form value', () => {
+        const conditionalFields: Field[] = [
+            {
+                kind: 'text',
+                id: 'subfolderName',
+                label: 'Subfolder name',
+                value: 'orders-sync',
+                required: (values) => values.createSubfolder === true,
+            },
+        ];
+
+        expect(
+            missingRequired(conditionalFields, {
+                createSubfolder: false,
+                subfolderName: '',
+            }),
+        ).toEqual([]);
+        expect(
+            missingRequired(conditionalFields, {
+                createSubfolder: true,
+                subfolderName: ' ',
+            }),
+        ).toEqual(['subfolderName']);
+    });
 });
 
 describe('interpolate', () => {
@@ -161,5 +188,42 @@ describe('interpolate', () => {
 
     it('leaves unknown placeholders untouched', () => {
         expect(interpolate('Deploy to {nope}', {})).toBe('Deploy to {nope}');
+    });
+});
+
+describe('resolveFormMessage', () => {
+    it('keeps interpolating legacy string messages', () => {
+        expect(resolveFormMessage('Deploy to {environment}', { environment: 'production' })).toBe(
+            'Deploy to production',
+        );
+    });
+
+    it('evaluates callback messages with the latest form values', () => {
+        expect(
+            resolveFormMessage(
+                (values) => `Target folder: ${values.directory}`,
+                { directory: '/workspace/orders-sync' },
+            ),
+        ).toBe('Target folder: /workspace/orders-sync');
+    });
+});
+
+describe('splitConfirmDialog', () => {
+    it('uses the first line as the modal headline and the rest as detail', () => {
+        expect(
+            splitConfirmDialog(
+                [
+                    'THIS WILL DELETE FILES IN THIS FOLDER',
+                    '/workspace/orders-sync',
+                    '',
+                    'Remote project: Orders sync (01PROJECT)',
+                ].join('\n'),
+            ),
+        ).toEqual({
+            message: 'THIS WILL DELETE FILES IN THIS FOLDER',
+            detail: ['/workspace/orders-sync', '', 'Remote project: Orders sync (01PROJECT)'].join(
+                '\n',
+            ),
+        });
     });
 });

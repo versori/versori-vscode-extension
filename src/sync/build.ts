@@ -30,6 +30,136 @@ export function normalizeSyncDirectory(input: string, workspaceRoot?: string): s
         : path.resolve(workspaceRoot ?? process.cwd(), trimmed);
 }
 
+export function fixedSyncDirectory(
+    preferredDirectory: string | undefined,
+    workspaceRoot?: string,
+): string | undefined {
+    if (!preferredDirectory?.trim()) {
+        return undefined;
+    }
+    return normalizeSyncDirectory(preferredDirectory, workspaceRoot);
+}
+
+export function validateSyncSubfolderName(input: string): string {
+    const trimmed = input.trim();
+    if (!trimmed) {
+        throw new Error('a subfolder name is required');
+    }
+    if (trimmed === '.' || trimmed === '..') {
+        throw new Error('a subfolder name cannot be "." or ".."');
+    }
+    if (
+        path.isAbsolute(trimmed) ||
+        path.posix.isAbsolute(trimmed) ||
+        path.win32.isAbsolute(trimmed) ||
+        /[\\/]/.test(trimmed)
+    ) {
+        throw new Error('a subfolder name must be a single relative path component');
+    }
+    return trimmed;
+}
+
+export function safeSyncSubfolderName(projectName: string): string {
+    const sanitized = projectName
+        .trim()
+        .replace(/\s*[\\/]\s*/g, ' - ')
+        .replace(/[:*?"<>|]/g, '-')
+        .replace(/[\u0000-\u001f]/g, '-')
+        .trim();
+
+    try {
+        return validateSyncSubfolderName(sanitized);
+    } catch {
+        return 'versori-project';
+    }
+}
+
+export function buildSyncTargetDirectory(
+    selectedDirectory: string,
+    createSubfolder: boolean,
+    subfolderName: string,
+): string {
+    const parent = selectedDirectory.trim();
+    if (!parent) {
+        throw new Error('a target directory is required');
+    }
+    if (!createSubfolder) {
+        return parent;
+    }
+    return path.join(parent, validateSyncSubfolderName(subfolderName));
+}
+
+export interface SyncCreateSubfolderOptions {
+    currentProjectId?: string;
+    selectedProjectId: string;
+    currentProjectDirectory?: string;
+    selectedDirectory: string;
+}
+
+export function defaultSyncCreateSubfolder(options: SyncCreateSubfolderOptions): boolean {
+    const currentDirectory = options.currentProjectDirectory?.trim();
+    const selectedDirectory = options.selectedDirectory.trim();
+    const isCurrentTarget =
+        options.currentProjectId === options.selectedProjectId &&
+        currentDirectory !== undefined &&
+        currentDirectory !== '' &&
+        selectedDirectory !== '' &&
+        path.resolve(currentDirectory) === path.resolve(selectedDirectory);
+
+    return !isCurrentTarget;
+}
+
+export interface SyncDefaultDirectoryOptions {
+    preferredDirectory?: string;
+    currentProjectId?: string;
+    selectedProjectId: string;
+    currentProjectDirectory?: string;
+    activeEditorWorkspaceDirectory?: string;
+    firstWorkspaceDirectory?: string;
+}
+
+/**
+ * Choose the folder the native browser should open at without checking that it
+ * exists: VS Code can still navigate to a missing path and the CLI can create
+ * a new Sync target after confirmation.
+ */
+export function selectSyncDefaultDirectory(
+    options: SyncDefaultDirectoryOptions,
+): string | undefined {
+    const candidates = [
+        options.preferredDirectory,
+        options.currentProjectId === options.selectedProjectId
+            ? options.currentProjectDirectory
+            : undefined,
+        options.activeEditorWorkspaceDirectory,
+        options.firstWorkspaceDirectory,
+    ];
+
+    for (const candidate of candidates) {
+        const trimmed = candidate?.trim();
+        if (trimmed) {
+            return trimmed;
+        }
+    }
+    return undefined;
+}
+
+export function buildSyncConfirmationMessage(
+    projectName: string,
+    projectId: string,
+    directory: string,
+): string {
+    return [
+        'THIS WILL DELETE FILES IN THIS FOLDER',
+        directory,
+        '',
+        `Remote project: ${projectName} (${projectId})`,
+        '',
+        'Live sync replaces local project files with the remote project.',
+        'Local-only files can be removed and local edits can be overwritten.',
+    ].join('\n');
+}
+
 export function syncState(
     state: ResolvedState,
     projectId: string,

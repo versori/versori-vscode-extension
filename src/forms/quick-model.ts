@@ -1,11 +1,10 @@
 import { interpolate } from './build';
-import { Field, FormSpec, FormValues } from './types';
+import { CheckboxField, Field, FormSpec, FormValues } from './types';
 
 export type FormScreen =
     | { kind: 'review' }
     | { kind: 'field'; fieldId: string }
-    | { kind: 'confirm' }
-    | { kind: 'result'; ok: boolean; text: string };
+    | { kind: 'result'; ok: boolean; text: string; dryRun?: boolean };
 
 export interface QuickFormState {
     values: FormValues;
@@ -19,6 +18,21 @@ export function createQuickFormState(spec: FormSpec): QuickFormState {
         screen: { kind: 'review' },
         history: [],
     };
+}
+
+export function checkboxFields(spec: FormSpec): CheckboxField[] {
+    return spec.fields.filter((field): field is CheckboxField => field.kind === 'checkbox');
+}
+
+/** Fields shown on the single review screen for the current values. */
+export function visibleReviewFields(spec: FormSpec, values: FormValues): Field[] {
+    return spec.fields.filter((field) => {
+        // Subfolder name only applies when Create subfolder is on.
+        if (field.id === 'subfolderName' && values.createSubfolder !== true) {
+            return false;
+        }
+        return true;
+    });
 }
 
 export function enterField(state: QuickFormState, fieldId: string): QuickFormState {
@@ -44,6 +58,10 @@ export function setFormValue(
     return { ...state, values: { ...state.values, [fieldId]: value } };
 }
 
+export function toggleCheckbox(state: QuickFormState, fieldId: string): QuickFormState {
+    return setFormValue(state, fieldId, state.values[fieldId] !== true);
+}
+
 export function currentFirst<T>(options: readonly T[], current: T | undefined): T[] {
     const index = current === undefined ? -1 : options.indexOf(current);
     if (current === undefined || index <= 0) {
@@ -67,6 +85,16 @@ export function fieldSummary(field: Field, value: string | boolean | undefined):
     return String(value ?? '').trim() || '(blank)';
 }
 
+/** Strip a leading VS Code codicon so toggle rows can own the checked glyph. */
+export function plainFieldLabel(label: string): string {
+    return label.replace(/^\$\([^)]+\)\s*/, '');
+}
+
+export function checkboxRowLabel(field: CheckboxField, checked: boolean): string {
+    const icon = checked ? '$(check)' : '$(circle-large-outline)';
+    return `${icon} ${plainFieldLabel(field.label)}`;
+}
+
 export function formActionLabel(spec: FormSpec, values: FormValues): string {
     if (!spec.dryRunFieldId || values[spec.dryRunFieldId] !== true) {
         return interpolate(spec.liveLabel, values);
@@ -79,9 +107,12 @@ export function requiresConfirmation(spec: FormSpec, values: FormValues): boolea
     return isLive && spec.confirmWhenLive;
 }
 
+/**
+ * One form screen, plus a confirmation step only when the live gate is on.
+ * Field edits reuse the form step rather than inventing extra wizard pages.
+ */
 export function totalSteps(spec: FormSpec, state: QuickFormState): number {
-    const confirmation = requiresConfirmation(spec, state.values) ? 1 : 0;
-    return Math.max(1, spec.fields.length + 2 + confirmation);
+    return requiresConfirmation(spec, state.values) ? 2 : 1;
 }
 
 export function stepFor(
@@ -91,13 +122,8 @@ export function stepFor(
 ): number {
     switch (screen.kind) {
         case 'review':
+        case 'field':
             return 1;
-        case 'field': {
-            const index = spec.fields.findIndex(({ id }) => id === screen.fieldId);
-            return index >= 0 ? index + 2 : 1;
-        }
-        case 'confirm':
-            return spec.fields.length + 2;
         case 'result':
             return totalSteps(spec, state);
     }

@@ -8,17 +8,25 @@ import { ResolvedState } from '../resolver/types';
 import {
     buildDeployArgs,
     buildVersionArgs,
-    interpolate,
     missingRequired,
     readBoolean,
     readString,
+    resolveFormMessage,
+    splitConfirmDialog,
 } from './build';
+import {
+    actionHeading,
+    actionIcon,
+    groupDryRunChanges,
+    parseDryRunOutput,
+    summarizeDryRun,
+} from './dry-run';
 import { POPUP_BACK, PopupSession } from './popup';
 import {
+    checkboxRowLabel,
     createQuickFormState,
     currentFirst,
     enterField,
-    enterScreen,
     fieldSummary,
     formActionLabel,
     goBack,
@@ -28,10 +36,15 @@ import {
     FormScreen,
     stepFor,
     totalSteps,
+    toggleCheckbox,
+    visibleReviewFields,
 } from './quick-model';
 import { Field, FormSpec, FormValues } from './types';
 
 const CONFIRM_SETTING = 'versori.confirmDeploy';
+const CONFIRM_YES = 'YES — Proceed';
+const CONFIRM_YES_DONT_ASK = "YES — Proceed and don't ask again";
+const CONFIRM_NO = 'NO — Cancel';
 
 export interface FormDeps {
     bin: string;
@@ -102,9 +115,9 @@ export async function openDeployForm(
             {
                 kind: 'checkbox',
                 id: 'dryRun',
-                label: 'Dry run — list the files that would upload, deploy nothing',
+                label: '$(eye) Dry run',
                 value: true,
-                hint: 'Untick to deploy for real.',
+                hint: 'Preview the files that would upload; deploy nothing.',
             },
         ],
     });
@@ -155,9 +168,9 @@ export async function openSaveVersionForm(
             {
                 kind: 'checkbox',
                 id: 'dryRun',
-                label: 'Dry run — list the files that would upload, save nothing',
+                label: '$(eye) Dry run',
                 value: true,
-                hint: 'Untick to save the checkpoint. Saving never deploys.',
+                hint: 'Preview the files that would upload; save nothing.',
             },
         ],
     });
@@ -169,7 +182,6 @@ export async function runForm(
     spec: FormSpec,
 ): Promise<'menu' | 'close'> {
     let state = createQuickFormState(spec);
-    let dontAskAgain = false;
 
     while (true) {
         if (state.screen.kind === 'review') {
@@ -199,6 +211,11 @@ export async function runForm(
                 continue;
             }
             if (picked.kind === 'field') {
+                const field = spec.fields.find(({ id }) => id === picked.id);
+                if (field?.kind === 'checkbox') {
+                    state = toggleCheckbox(state, picked.id);
+                    continue;
+                }
                 state = enterField(state, picked.id);
                 continue;
             }
@@ -210,15 +227,22 @@ export async function runForm(
             }
 
             if (requiresConfirmation(spec, state.values)) {
-                state = enterScreen(state, { kind: 'confirm' });
-                continue;
+                const decision = await confirmLiveAction(popup, spec, state.values);
+                if (decision === 'cancel') {
+                    continue;
+                }
+                if (decision === 'dontAsk' && spec.confirmSettingId) {
+                    await vscode.workspace
+                        .getConfiguration()
+                        .update(spec.confirmSettingId, false, vscode.ConfigurationTarget.Global);
+                }
             }
 
-            const result = await execute(deps, popup, spec, state.values);
-            if (result.kind === 'hidden') {
-                return 'menu';
+            const finished = await finishRun(deps, popup, spec, state.values);
+            if (finished.kind === 'done') {
+                return finished.next;
             }
-            state = resultState(state, result);
+            state = resultState(state, finished.result);
             continue;
         }
 
@@ -249,58 +273,15 @@ export async function runForm(
             continue;
         }
 
-        if (state.screen.kind === 'confirm') {
-            const picked: ConfirmChoice | typeof POPUP_BACK | undefined =
-                await popup.choose<ConfirmChoice>({
-                    title: formTitle(spec, 'Confirm'),
-                    placeholder: spec.subtitle,
-                    items: confirmationItems(spec, state, dontAskAgain),
-                    step: stepFor(spec, state.screen, state),
-                    totalSteps: totalSteps(spec, state),
-                    back: true,
-                });
-
-            if (picked === undefined) {
-                state = goBack(state) ?? reviewState(state);
-                continue;
-            }
-            if (picked === POPUP_BACK) {
-                const previous = goBack(state);
-                if (!previous) {
-                    return 'menu';
-                }
-                state = previous;
-                continue;
-            }
-            if (picked.kind === 'dontAsk') {
-                const setting = await chooseDontAskAgain(popup, spec, state, dontAskAgain);
-                if (setting === POPUP_BACK) {
-                    continue;
-                }
-                dontAskAgain = setting;
-                continue;
-            }
-            if (picked.kind === 'confirm') {
-                if (dontAskAgain && spec.confirmSettingId) {
-                    await vscode.workspace
-                        .getConfiguration()
-                        .update(spec.confirmSettingId, false, vscode.ConfigurationTarget.Global);
-                }
-                const result = await execute(deps, popup, spec, state.values);
-                if (result.kind === 'hidden') {
-                    return 'menu';
-                }
-                state = resultState(state, result);
-                continue;
-            }
-
-            continue;
-        }
-
         const result = state.screen;
         const picked = await popup.choose<ResultChoice>({
-            title: formTitle(spec, result.ok ? 'Finished' : 'Failed'),
-            placeholder: spec.subtitle,
+            title: formTitle(
+                spec,
+                result.ok ? (result.dryRun ? 'Preview' : 'Finished') : 'Failed',
+            ),
+            placeholder: result.ok && result.dryRun
+                ? summarizeDryRun(parseDryRunOutput(result.text))
+                : spec.subtitle,
             items: resultItems(result),
             step: stepFor(spec, result, state),
             totalSteps: totalSteps(spec, state),
@@ -345,95 +326,76 @@ type ReviewChoice =
     | { kind: 'field'; id: string }
     | { kind: 'submit' };
 
-type ConfirmChoice =
-    | { kind: 'warning' }
-    | { kind: 'dontAsk' }
-    | { kind: 'confirm' };
-
 type ResultChoice = { kind: 'detail' } | { kind: 'back' } | { kind: 'close' };
 
 type ExecutionResult =
-    | { kind: 'result'; ok: boolean; text: string }
+    | { kind: 'result'; ok: boolean; text: string; dryRun?: boolean }
     | { kind: 'hidden' };
 
 function reviewItems(
     spec: FormSpec,
     state: QuickFormState,
-): Array<{ label: string; description: string; value: ReviewChoice }> {
-    return [
-        ...spec.fields.map((field) => ({
+): Array<{ label: string; description: string; detail?: string; value: ReviewChoice }> {
+    const fields = visibleReviewFields(spec, state.values).map((field) => {
+        if (field.kind === 'checkbox') {
+            const checked = state.values[field.id] === true;
+            return {
+                label: checkboxRowLabel(field, checked),
+                description: checked ? 'On — select to turn off' : 'Off — select to turn on',
+                detail: field.hint,
+                value: { kind: 'field' as const, id: field.id },
+            };
+        }
+        return {
             label: field.label,
             description: fieldSummary(field, state.values[field.id]),
+            detail: field.hint,
             value: { kind: 'field' as const, id: field.id },
-        })),
+        };
+    });
+
+    return [
+        ...fields,
         {
             label: formActionLabel(spec, state.values),
             description: requiresConfirmation(spec, state.values)
-                ? 'Review warning before running'
+                ? 'Shows a warning dialog before running'
                 : 'Run now',
             value: { kind: 'submit' as const },
         },
     ];
 }
 
-function confirmationItems(
-    spec: FormSpec,
-    state: QuickFormState,
-    dontAskAgain: boolean,
-): Array<{
-    label: string;
-    description?: string;
-    detail?: string;
-    value: ConfirmChoice;
-}> {
-    const items: Array<{
-        label: string;
-        description?: string;
-        detail?: string;
-        value: ConfirmChoice;
-    }> = [
-        {
-            label: 'Warning',
-            description: 'Review before running',
-            detail: interpolate(spec.confirmMessage, state.values),
-            value: { kind: 'warning' },
-        },
-    ];
-
-    if (spec.confirmSettingId) {
-        items.push({
-            label: "Don't ask again",
-            description: dontAskAgain ? 'On' : 'Off',
-            value: { kind: 'dontAsk' },
-        });
-    }
-
-    items.push({
-        label: 'Confirm',
-        description: 'Run now',
-        value: { kind: 'confirm' },
-    });
-    return items;
-}
-
-async function chooseDontAskAgain(
+/**
+ * Native modal confirmation — QuickPick rows truncate multi-line warnings.
+ * Hides the popup first so the dialog is the only thing on screen.
+ */
+async function confirmLiveAction(
     popup: PopupSession,
     spec: FormSpec,
-    state: QuickFormState,
-    dontAskAgain: boolean,
-): Promise<boolean | typeof POPUP_BACK> {
-    const setting = await popup.choose({
-        title: formTitle(spec, "Don't ask again"),
-        placeholder: spec.subtitle,
-        items: currentFirst([false, true], dontAskAgain).map((value) => ({
-            label: value ? 'On' : 'Off',
-            value,
-        })),
-        step: stepFor(spec, state.screen, state),
-        totalSteps: totalSteps(spec, state),
-        back: true,
-    });
-    return setting === undefined ? POPUP_BACK : setting;
+    values: FormValues,
+): Promise<'confirm' | 'dontAsk' | 'cancel'> {
+    popup.close();
+
+    const warning = resolveFormMessage(spec.confirmMessage, values);
+    const { message, detail } = splitConfirmDialog(warning);
+    const buttons = spec.confirmSettingId
+        ? [CONFIRM_NO, CONFIRM_YES, CONFIRM_YES_DONT_ASK]
+        : [CONFIRM_NO, CONFIRM_YES];
+
+    const picked = await vscode.window.showWarningMessage(
+        message,
+        { modal: true, detail: detail || undefined },
+        ...buttons,
+    );
+
+    if (picked === CONFIRM_YES_DONT_ASK) {
+        return 'dontAsk';
+    }
+    if (picked === CONFIRM_YES) {
+        return 'confirm';
+    }
+    return 'cancel';
 }
 
 async function editField(
@@ -480,16 +442,119 @@ async function editField(
 
 function resultItems(
     result: Extract<FormScreen, { kind: 'result' }>,
-): Array<{ label: string; description?: string; value: ResultChoice }> {
-    return [
+): Array<{ label: string; description?: string; detail?: string; value: ResultChoice }> {
+    const actions: Array<{
+        label: string;
+        description?: string;
+        detail?: string;
+        value: ResultChoice;
+    }> = [
+        { label: '$(arrow-left) Back to form', value: { kind: 'back' } },
+        { label: '$(close) Close', value: { kind: 'close' } },
+    ];
+
+    if (!result.ok) {
+        return [
+            {
+                label: '$(error) Failed',
+                description: conciseOutput(result.text),
+                detail: result.text,
+                value: { kind: 'detail' },
+            },
+            ...actions,
+        ];
+    }
+
+    if (!result.dryRun) {
+        return [
+            {
+                label: '$(check) Finished',
+                description: conciseOutput(result.text),
+                detail: result.text,
+                value: { kind: 'detail' },
+            },
+            ...actions,
+        ];
+    }
+
+    const preview = parseDryRunOutput(result.text);
+    const items: Array<{
+        label: string;
+        description?: string;
+        detail?: string;
+        value: ResultChoice;
+    }> = [
         {
-            label: result.ok ? 'Finished' : 'Failed',
-            description: conciseOutput(result.text),
+            label: '$(eye) Dry-run preview',
+            description: summarizeDryRun(preview),
+            detail: 'No files were changed. Untick Dry run and confirm to apply.',
             value: { kind: 'detail' },
         },
-        { label: 'Back to form', value: { kind: 'back' } },
-        { label: 'Close', value: { kind: 'close' } },
     ];
+
+    if (preview.changes.length === 0) {
+        items.push({
+            label: '$(check) No file changes',
+            description: 'Nothing would be created, updated, or deleted',
+            value: { kind: 'detail' },
+        });
+    } else {
+        for (const group of groupDryRunChanges(preview.changes)) {
+            items.push({
+                label: `${actionIcon(group.action)} ${actionHeading(group.action)}`,
+                description: `${group.paths.length}`,
+                value: { kind: 'detail' },
+            });
+            for (const path of group.paths) {
+                items.push({
+                    label: `$(file) ${path}`,
+                    description: actionHeading(group.action),
+                    value: { kind: 'detail' },
+                });
+            }
+        }
+    }
+
+    for (const note of preview.notes) {
+        items.push({
+            label: '$(info) Note',
+            description: conciseOutput(note),
+            detail: note,
+            value: { kind: 'detail' },
+        });
+    }
+
+    return [...items, ...actions];
+}
+
+type FinishRunResult =
+    | { kind: 'done'; next: 'menu' | 'close' }
+    | { kind: 'continue'; result: Extract<ExecutionResult, { kind: 'result' }> };
+
+async function finishRun(
+    deps: FormDeps,
+    popup: PopupSession,
+    spec: FormSpec,
+    values: FormValues,
+): Promise<FinishRunResult> {
+    const dryRun = Boolean(spec.dryRunFieldId && readBoolean(values, spec.dryRunFieldId));
+    const result = await execute(deps, popup, spec, values);
+    if (result.kind === 'hidden') {
+        return { kind: 'done', next: 'menu' };
+    }
+
+    // Dry runs always stay open so the structured preview is visible.
+    // Live runs may close immediately when the form opts into that.
+    if (!spec.closeAfterRun || dryRun || !result.ok) {
+        return {
+            kind: 'continue',
+            result: { ...result, dryRun },
+        };
+    }
+
+    popup.close();
+    void vscode.window.showInformationMessage(spec.successMessage(values));
+    return { kind: 'done', next: 'close' };
 }
 
 async function execute(
@@ -531,10 +596,18 @@ async function execute(
         appendOutput(deps, command, text);
 
         if (!dryRun) {
-            if (popup.isVisible()) {
-                await vscode.window.showInformationMessage(spec.successMessage(values));
-            }
             spec.onLiveSuccess?.();
+            const message = spec.successMessage(values);
+            if (popup.isVisible()) {
+                // Let runForm render the result screen and clear QuickPick.busy
+                // before opening the toast. The notification is deliberately
+                // fire-and-forget so it cannot hold the spinner open.
+                setTimeout(() => {
+                    if (popup.isVisible()) {
+                        void vscode.window.showInformationMessage(message);
+                    }
+                }, 0);
+            }
         }
         return popup.isVisible()
             ? { kind: 'result', ok: true, text }
@@ -573,7 +646,12 @@ function resultState(
 ): QuickFormState {
     return {
         ...state,
-        screen: { kind: 'result', ok: result.ok, text: result.text },
+        screen: {
+            kind: 'result',
+            ok: result.ok,
+            text: result.text,
+            dryRun: result.dryRun,
+        },
         history: [{ kind: 'review' }],
     };
 }

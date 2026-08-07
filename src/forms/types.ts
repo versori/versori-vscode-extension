@@ -1,3 +1,9 @@
+export type FormValues = Record<string, string | boolean>;
+
+export type RequiredCondition = boolean | ((values: FormValues) => boolean);
+
+export type FormMessage = string | ((values: FormValues) => string);
+
 interface FieldBase {
     id: string;
     label: string;
@@ -13,7 +19,7 @@ export interface TextField extends FieldBase {
      * Blocks submission while empty. Used where the CLI would otherwise open an
      * interactive editor and deadlock a spawned process.
      */
-    required?: boolean;
+    required?: RequiredCondition;
 }
 
 export interface SelectField extends FieldBase {
@@ -28,8 +34,6 @@ export interface CheckboxField extends FieldBase {
 }
 
 export type Field = TextField | SelectField | CheckboxField;
-
-export type FormValues = Record<string, string | boolean>;
 
 export interface FormSpec {
     title: string;
@@ -65,11 +69,19 @@ export interface FormSpec {
      * silently disable a confirmation the user never saw.
      */
     confirmSettingId: string;
-    /** Warning shown on the confirmation screen. `{fieldId}` is interpolated. */
-    confirmMessage: string;
+    /**
+     * Warning shown on the confirmation screen. String messages interpolate
+     * `{fieldId}` placeholders; callbacks can derive text from current values.
+     */
+    confirmMessage: FormMessage;
     /**
      * Working directory for the command. Omitted uses the resolved project
      * directory; `null` spawns without a cwd so the CLI can create a new target.
      */
     commandCwd?: string | null;
+    /**
+     * Close the popup after a successful live run. Dry runs always keep the
+     * popup open so the structured preview can be reviewed in place.
+     */
+    closeAfterRun?: boolean;
 }

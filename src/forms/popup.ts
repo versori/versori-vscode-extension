@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 
+import { popupHideAction } from './popup-policy';
+
 export const POPUP_BACK = Symbol('popup-back');
 export type PopupResult<T> = T | typeof POPUP_BACK | undefined;
 
@@ -21,6 +23,11 @@ export interface PopupScreen<T> {
     back?: boolean;
 }
 
+export interface PopupManyScreen<T> extends PopupScreen<T> {
+    /** Values that should render as checked when the screen opens. */
+    picked?: readonly T[];
+}
+
 export class PopupSession {
     private readonly quickPick = vscode.window.createQuickPick<vscode.QuickPickItem>();
     private visible = false;
@@ -32,7 +39,7 @@ export class PopupSession {
 
     async choose<T>(screen: PopupScreen<T>): Promise<PopupResult<T>> {
         this.prepareScreen();
-        this.configure(screen, screen.items ?? []);
+        this.configure(screen, screen.items ?? [], false);
 
         return this.waitForScreen(() => {
             const selected =
@@ -41,11 +48,25 @@ export class PopupSession {
         });
     }
 
+    async chooseMany<T>(screen: PopupManyScreen<T>): Promise<PopupResult<T[]>> {
+        this.prepareScreen();
+        const picked = new Set(screen.picked ?? []);
+        const items = (screen.items ?? []).map((item) => ({
+            ...item,
+            picked: picked.has(item.value),
+        }));
+        this.configure(screen, items, true);
+
+        return this.waitForScreen(() =>
+            this.quickPick.selectedItems.map((item) => (item as PopupItem<T>).value),
+        );
+    }
+
     async input(
         screen: Omit<PopupScreen<never>, 'items'>,
     ): Promise<PopupResult<string>> {
         this.prepareScreen();
-        this.configure({ ...screen, items: [] }, []);
+        this.configure({ ...screen, items: [] }, [], false);
 
         return this.waitForScreen(() => this.quickPick.value);
     }
@@ -60,6 +81,7 @@ export class PopupSession {
         this.quickPick.buttons = [];
         this.quickPick.step = undefined;
         this.quickPick.totalSteps = undefined;
+        this.quickPick.canSelectMany = false;
         this.quickPick.busy = true;
         this.quickPick.enabled = false;
         this.visible = true;
@@ -86,12 +108,14 @@ export class PopupSession {
     private configure<T>(
         screen: PopupScreen<T>,
         items: readonly vscode.QuickPickItem[],
+        canSelectMany: boolean,
     ): void {
         this.quickPick.title = screen.title;
         this.quickPick.placeholder = screen.placeholder;
         this.quickPick.prompt = undefined;
         this.quickPick.value = screen.value ?? '';
         this.quickPick.matchOnDescription = screen.matchOnDescription ?? false;
+        this.quickPick.canSelectMany = canSelectMany;
         this.quickPick.items = items;
         this.quickPick.buttons = screen.back ? [vscode.QuickInputButtons.Back] : [];
         this.quickPick.step = screen.step;
@@ -110,25 +134,49 @@ export class PopupSession {
     ): Promise<PopupResult<T>> {
         return new Promise((resolve) => {
             let settled = false;
+            let accepted = false;
+            let hideCancellation: ReturnType<typeof setTimeout> | undefined;
             const finish = (result: PopupResult<T>): void => {
                 if (settled) {
                     return;
                 }
                 settled = true;
+                if (hideCancellation !== undefined) {
+                    clearTimeout(hideCancellation);
+                    hideCancellation = undefined;
+                }
                 this.resolveCurrentScreen = undefined;
                 this.disposeScreenSubscriptions();
                 resolve(result);
             };
 
+            const accept = (): void => {
+                accepted = true;
+                finish(onAccept());
+            };
+            const cancelOnHide = (): void => {
+                if (accepted || hideCancellation !== undefined) {
+                    return;
+                }
+                // QuickPick acceptance may hide the control before onDidAccept
+                // runs. Give that event a chance to win over Escape/cancellation.
+                hideCancellation = setTimeout(() => {
+                    hideCancellation = undefined;
+                    if (popupHideAction(accepted) === 'cancel') {
+                        finish(undefined);
+                    }
+                }, 0);
+            };
+
             this.resolveCurrentScreen = () => finish(undefined);
             this.screenSubscriptions = [
-                this.quickPick.onDidAccept(() => finish(onAccept())),
+                this.quickPick.onDidAccept(accept),
                 this.quickPick.onDidTriggerButton((button) => {
                     if (button === vscode.QuickInputButtons.Back) {
                         finish(POPUP_BACK);
                     }
                 }),
-                this.quickPick.onDidHide(() => finish(undefined)),
+                this.quickPick.onDidHide(cancelOnHide),
             ];
             this.visible = true;
             this.quickPick.show();

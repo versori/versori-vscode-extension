@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    checkboxFields,
+    checkboxRowLabel,
     createQuickFormState,
     currentFirst,
     enterField,
@@ -12,8 +14,10 @@ import {
     setFormValue,
     stepFor,
     totalSteps,
+    toggleCheckbox,
+    visibleReviewFields,
 } from './quick-model';
-import { interpolate } from './build';
+import { resolveFormMessage } from './build';
 import { FormSpec, FormValues } from './types';
 
 const spec: FormSpec = {
@@ -35,7 +39,7 @@ const spec: FormSpec = {
 };
 
 describe('quick form state model', () => {
-    it('copies initial field values and starts on the review screen', () => {
+    it('copies initial field values and starts on the single review screen', () => {
         const state = createQuickFormState(spec);
 
         expect(state.values).toEqual({ name: 'v1', dryRun: true });
@@ -43,16 +47,95 @@ describe('quick form state model', () => {
         expect(state.history).toEqual([]);
     });
 
+    it('keeps checkbox and text fields on one review screen', () => {
+        const groupedSpec: FormSpec = {
+            ...spec,
+            fields: [
+                ...spec.fields,
+                { kind: 'checkbox', id: 'assets', label: 'Include assets', value: false },
+            ],
+        };
+        const state = createQuickFormState(groupedSpec);
+
+        expect(checkboxFields(groupedSpec).map(({ id }) => id)).toEqual(['dryRun', 'assets']);
+        expect(state.screen).toEqual({ kind: 'review' });
+        expect(totalSteps(groupedSpec, state)).toBe(1);
+        expect(stepFor(groupedSpec, { kind: 'review' }, state)).toBe(1);
+    });
+
+    it('hides the subfolder name row until Create subfolder is on', () => {
+        const syncSpec: FormSpec = {
+            ...spec,
+            fields: [
+                { kind: 'checkbox', id: 'dryRun', label: 'Dry run', value: true },
+                {
+                    kind: 'checkbox',
+                    id: 'createSubfolder',
+                    label: 'Create subfolder',
+                    value: true,
+                },
+                {
+                    kind: 'text',
+                    id: 'subfolderName',
+                    label: 'Subfolder name',
+                    value: 'Orders sync',
+                },
+                { kind: 'checkbox', id: 'assets', label: 'Include assets', value: false },
+            ],
+        };
+        const state = createQuickFormState(syncSpec);
+
+        expect(visibleReviewFields(syncSpec, state.values).map(({ id }) => id)).toEqual([
+            'dryRun',
+            'createSubfolder',
+            'subfolderName',
+            'assets',
+        ]);
+        expect(
+            visibleReviewFields(syncSpec, { ...state.values, createSubfolder: false }).map(
+                ({ id }) => id,
+            ),
+        ).toEqual(['dryRun', 'createSubfolder', 'assets']);
+    });
+
     it('enters a field and Back returns to review without losing edits', () => {
-        const entered = enterField(createQuickFormState(spec), 'name');
+        const reviewed = createQuickFormState(spec);
+        const entered = enterField(reviewed, 'name');
         const edited = setFormValue(entered, 'name', 'v2');
 
         expect(goBack(edited)?.screen).toEqual({ kind: 'review' });
         expect(goBack(edited)?.values.name).toBe('v2');
     });
 
+    it('toggles a checkbox in place without opening an extra screen', () => {
+        const state = createQuickFormState(spec);
+        const toggled = toggleCheckbox(state, 'dryRun');
+
+        expect(toggled.values.dryRun).toBe(false);
+        expect(toggled.screen).toEqual({ kind: 'review' });
+        expect(toggled.history).toEqual([]);
+        expect(
+            checkboxRowLabel(
+                { kind: 'checkbox', id: 'dryRun', label: '$(eye) Dry run', value: true },
+                true,
+            ),
+        ).toBe('$(check) Dry run');
+        expect(
+            checkboxRowLabel(
+                { kind: 'checkbox', id: 'dryRun', label: '$(eye) Dry run', value: true },
+                false,
+            ),
+        ).toBe('$(circle-large-outline) Dry run');
+    });
+
     it('records an entered screen so Back can return to the previous screen', () => {
-        const entered = enterScreen(createQuickFormState(spec), { kind: 'confirm' });
+        const reviewed = createQuickFormState(spec);
+        const entered = enterScreen(reviewed, {
+            kind: 'result',
+            ok: true,
+            text: 'done',
+            dryRun: true,
+        });
 
         expect(goBack(entered)?.screen).toEqual({ kind: 'review' });
     });
@@ -108,26 +191,24 @@ describe('quick form state model', () => {
     });
 
     it('interpolates confirmation text from current values', () => {
-        expect(interpolate(spec.confirmMessage, { name: 'v2', dryRun: false })).toBe(
+        expect(resolveFormMessage(spec.confirmMessage, { name: 'v2', dryRun: false })).toBe(
             'Deploy v2 for real?',
         );
     });
 
-    it('numbers each screen and reserves a step for live confirmation', () => {
+    it('numbers the form as one step and adds confirmation only for live runs', () => {
         const dryRun = createQuickFormState(spec);
         const live = setFormValue(dryRun, 'dryRun', false);
 
-        expect(totalSteps(spec, dryRun)).toBe(4);
-        expect(totalSteps(spec, live)).toBe(5);
+        expect(totalSteps(spec, dryRun)).toBe(1);
+        expect(totalSteps(spec, live)).toBe(2);
         expect(stepFor(spec, { kind: 'review' }, live)).toBe(1);
-        expect(stepFor(spec, { kind: 'field', fieldId: 'name' }, live)).toBe(2);
-        expect(stepFor(spec, { kind: 'field', fieldId: 'dryRun' }, live)).toBe(3);
-        expect(stepFor(spec, { kind: 'confirm' }, live)).toBe(4);
+        expect(stepFor(spec, { kind: 'field', fieldId: 'name' }, live)).toBe(1);
         expect(
             stepFor(spec, { kind: 'result', ok: true, text: 'done' }, live),
-        ).toBe(5);
+        ).toBe(2);
         expect(
             stepFor(spec, { kind: 'result', ok: true, text: 'preview' }, dryRun),
-        ).toBe(4);
+        ).toBe(1);
     });
 });
