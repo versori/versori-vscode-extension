@@ -44,7 +44,6 @@ import { Field, FormSpec, FormValues } from './types';
 const CONFIRM_SETTING = 'versori.confirmDeploy';
 const CONFIRM_YES = 'YES — Proceed';
 const CONFIRM_YES_DONT_ASK = "YES — Proceed and don't ask again";
-const CONFIRM_NO = 'NO — Cancel';
 
 export interface FormDeps {
     bin: string;
@@ -379,9 +378,10 @@ async function confirmLiveAction(
 
     const warning = resolveFormMessage(spec.confirmMessage, values);
     const { message, detail } = splitConfirmDialog(warning);
+    // Modal dialogs already expose Cancel/Escape — only add affirmative actions.
     const buttons = spec.confirmSettingId
-        ? [CONFIRM_NO, CONFIRM_YES, CONFIRM_YES_DONT_ASK]
-        : [CONFIRM_NO, CONFIRM_YES];
+        ? [CONFIRM_YES, CONFIRM_YES_DONT_ASK]
+        : [CONFIRM_YES];
 
     const picked = await vscode.window.showWarningMessage(
         message,
