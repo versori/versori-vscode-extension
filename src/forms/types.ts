@@ -32,8 +32,6 @@ export type Field = TextField | SelectField | CheckboxField;
 export type FormValues = Record<string, string | boolean>;
 
 export interface FormSpec {
-    /** Webview view type; also the singleton key. */
-    viewType: string;
     title: string;
     heading: string;
     /** Context and project, shown under the heading. */
@@ -41,9 +39,6 @@ export interface FormSpec {
     fields: Field[];
     /**
      * Argv for this form's command. Throws with a user-facing message when invalid.
-     *
-     * Dropped by `JSON.stringify` when the spec is embedded in the webview, so it
-     * stays on the extension side where the values can be validated.
      */
     buildArgs: (values: FormValues) => string[];
     /** Notification text after a successful non-dry run. */
@@ -59,33 +54,22 @@ export interface FormSpec {
     dryRunLabel: string;
     /** Submit label once dry run is unticked. `{fieldId}` is interpolated. */
     liveLabel: string;
-    /**
-     * Rebuild the panel when the form is opened again, instead of revealing the
-     * one already open.
-     *
-     * Set by forms whose fields — and whose `buildArgs` closure — are a snapshot
-     * of remote state read at open time. Revealing such a panel would submit the
-     * first snapshot however long ago it was taken.
-     */
-    refreshOnReopen: boolean;
-    /** Show the confirm bar before a live run. */
+    /** Show the confirmation screen before a live run. */
     confirmWhenLive: boolean;
     /**
-     * Setting id that `confirmWhenLive` was read from, so the confirm bar's
+     * Setting id that `confirmWhenLive` was read from, so the confirmation screen's
      * "Don't ask again" persists to the right place.
      *
-     * `''` when this form always confirms. The checkbox is then hidden rather
+     * `''` when this form always confirms. The setting control is then hidden rather
      * than left inert — writing another command's setting from here would
      * silently disable a confirmation the user never saw.
      */
     confirmSettingId: string;
-    /** Warning shown in the confirm bar. `{fieldId}` is interpolated. */
+    /** Warning shown on the confirmation screen. `{fieldId}` is interpolated. */
     confirmMessage: string;
-}
-
-/** Payload posted by the webview when the user commits. */
-export interface SubmitMessage {
-    type: 'submit';
-    values: FormValues;
-    dontAskAgain: boolean;
+    /**
+     * Working directory for the command. Omitted uses the resolved project
+     * directory; `null` spawns without a cwd so the CLI can create a new target.
+     */
+    commandCwd?: string | null;
 }

@@ -1,14 +1,35 @@
-import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
-import { CliError, CommandSpec, displayCommand, run } from '../cli';
+import { CliError, displayCommand, run } from '../cli';
 import { contextFor } from '../commands/target';
 import { resolveEnvironmentNames } from '../environments';
 import { ResolvedState } from '../resolver/types';
-import { buildDeployArgs, buildVersionArgs, readBoolean, readString } from './build';
-import { renderFormHtml } from './html';
-import { FormSpec, FormValues, SubmitMessage } from './types';
+import {
+    buildDeployArgs,
+    buildVersionArgs,
+    interpolate,
+    missingRequired,
+    readBoolean,
+    readString,
+} from './build';
+import { POPUP_BACK, PopupSession } from './popup';
+import {
+    createQuickFormState,
+    currentFirst,
+    enterField,
+    enterScreen,
+    fieldSummary,
+    formActionLabel,
+    goBack,
+    requiresConfirmation,
+    setFormValue,
+    QuickFormState,
+    FormScreen,
+    stepFor,
+    totalSteps,
+} from './quick-model';
+import { Field, FormSpec, FormValues } from './types';
 
 const CONFIRM_SETTING = 'versori.confirmDeploy';
 
@@ -18,53 +39,27 @@ export interface FormDeps {
     output: vscode.OutputChannel;
 }
 
-/** Open panels, keyed by view type, so a second invocation reveals rather than duplicates. */
-const openPanels = new Map<string, vscode.WebviewPanel>();
-
-/**
- * Which target each open panel was built for, keyed by view type.
- *
- * `refreshOnReopen: false` exists so that reopening Deploy or Save version keeps
- * a half-typed version description rather than throwing it away. But the
- * revealed panel's handler closes over the first call's `deps` and `spec`, so
- * `buildArgs` still carries the *original* project — reopening Deploy from
- * project B revealed A's form, and submitting deployed A.
- *
- * Recording the target lets both properties hold at once: reveal-and-retain
- * within a project, rebuild across projects. The key covers exactly what
- * `buildArgs` and the `CommandSpec` close over — the project id, the spawn cwd
- * and the context — so a panel is only ever revealed when every one of them
- * still matches.
- */
-const openTargets = new Map<string, string>();
-
-function targetKey(state: ResolvedState): string {
-    // Newline-joined: neither a context name, a ULID project id nor a path
-    // contains one, so the three parts cannot run together ambiguously.
-    return [state.contextName ?? '', state.projectId ?? '', state.projectDir ?? ''].join('\n');
-}
-
-export async function openDeployForm(deps: FormDeps): Promise<void> {
+export async function openDeployForm(
+    deps: FormDeps,
+    popup?: PopupSession,
+): Promise<'menu' | 'close'> {
+    popup?.close();
     const environments = await resolveEnvironmentNames(deps);
     if (!environments) {
-        return;
+        return 'menu';
     }
 
     const confirmWhenLive = vscode.workspace
         .getConfiguration()
         .get<boolean>(CONFIRM_SETTING, true);
 
-    show(deps, {
-        viewType: 'versori.deployForm',
+    return runOwnedForm(deps, popup, {
         title: `Deploy · ${projectName(deps.state)}`,
         heading: 'Deploy project',
         subtitle: subtitle(deps.state),
         dryRunFieldId: 'dryRun',
         dryRunLabel: 'Run dry run',
         liveLabel: 'Deploy to {environment}',
-        // Nothing here is a snapshot of remote state, and reopening should not
-        // discard a half-written version description.
-        refreshOnReopen: false,
         confirmWhenLive,
         confirmSettingId: CONFIRM_SETTING,
         // Names the project as well as the environment: the last gate should
@@ -115,18 +110,17 @@ export async function openDeployForm(deps: FormDeps): Promise<void> {
     });
 }
 
-export function openSaveVersionForm(deps: FormDeps): void {
-    show(deps, {
-        viewType: 'versori.saveVersionForm',
+export async function openSaveVersionForm(
+    deps: FormDeps,
+    popup?: PopupSession,
+): Promise<'menu' | 'close'> {
+    return runOwnedForm(deps, popup, {
         title: `Save version · ${projectName(deps.state)}`,
         heading: 'Save version',
         subtitle: subtitle(deps.state),
         dryRunFieldId: 'dryRun',
         dryRunLabel: 'Run dry run',
         liveLabel: 'Save version',
-        // A version is an inert snapshot — it makes nothing live, so the extra
-        // confirmation that guards deploy would be friction without a purpose.
-        refreshOnReopen: false,
         confirmWhenLive: false,
         confirmSettingId: '',
         confirmMessage: '',
@@ -169,133 +163,435 @@ export function openSaveVersionForm(deps: FormDeps): void {
     });
 }
 
-export function show(deps: FormDeps, spec: FormSpec): void {
-    const existing = openPanels.get(spec.viewType);
-    const key = targetKey(deps.state);
+export async function runForm(
+    deps: FormDeps,
+    popup: PopupSession,
+    spec: FormSpec,
+): Promise<'menu' | 'close'> {
+    let state = createQuickFormState(spec);
+    let dontAskAgain = false;
 
-    if (existing) {
-        // Reveal-and-retain, but only for the project the open panel was built
-        // for. That keeps a half-typed version description across a same-project
-        // reopen without ever revealing — and submitting — another project's form.
-        if (!spec.refreshOnReopen && openTargets.get(spec.viewType) === key) {
-            existing.reveal();
-            return;
+    while (true) {
+        if (state.screen.kind === 'review') {
+            const picked = await popup.choose<ReviewChoice>({
+                title: formTitle(spec),
+                placeholder: spec.subtitle,
+                items: reviewItems(spec, state),
+                step: stepFor(spec, state.screen, state),
+                totalSteps: totalSteps(spec, state),
+                back: true,
+            });
+
+            if (picked === undefined) {
+                const previous = goBack(state);
+                if (!previous) {
+                    return 'menu';
+                }
+                state = previous;
+                continue;
+            }
+            if (picked === POPUP_BACK) {
+                const previous = goBack(state);
+                if (!previous) {
+                    return 'menu';
+                }
+                state = previous;
+                continue;
+            }
+            if (picked.kind === 'field') {
+                state = enterField(state, picked.id);
+                continue;
+            }
+
+            const missing = missingRequired(spec.fields, state.values);
+            if (missing.length > 0) {
+                state = enterField(state, missing[0]);
+                continue;
+            }
+
+            if (requiresConfirmation(spec, state.values)) {
+                state = enterScreen(state, { kind: 'confirm' });
+                continue;
+            }
+
+            const result = await execute(deps, popup, spec, state.values);
+            if (result.kind === 'hidden') {
+                return 'menu';
+            }
+            state = resultState(state, result);
+            continue;
         }
 
-        // Either the spec is snapshot-backed (Resources), or the target changed.
-        //
-        // Snapshot case: the caller has just re-read the state this spec was built
-        // from, while the open panel still holds the previous snapshot in both its
-        // fields and its `buildArgs` closure. Revealing it would submit those
-        // stale values — and for a read-modify-write command that silently
-        // reverts whatever changed in between. Losing unsubmitted keystrokes is
-        // much the cheaper harm: reopening from the menu means "show me the
-        // current config".
-        //
-        // Changed-target case: same reasoning, worse consequence — the stale
-        // `buildArgs` would deploy the project the panel was first opened from.
-        existing.dispose();
+        if (state.screen.kind === 'field') {
+            const fieldScreen = state.screen;
+            const field = spec.fields.find(({ id }) => id === fieldScreen.fieldId);
+            if (!field) {
+                state = reviewState(state);
+                continue;
+            }
+
+            const value = await editField(popup, spec, state, field);
+            if (value === undefined) {
+                state = goBack(state) ?? reviewState(state);
+                continue;
+            }
+            if (value === POPUP_BACK) {
+                const previous = goBack(state);
+                if (!previous) {
+                    return 'menu';
+                }
+                state = previous;
+                continue;
+            }
+
+            const edited = setFormValue(state, field.id, value);
+            state = goBack(edited) ?? reviewState(edited);
+            continue;
+        }
+
+        if (state.screen.kind === 'confirm') {
+            const picked: ConfirmChoice | typeof POPUP_BACK | undefined =
+                await popup.choose<ConfirmChoice>({
+                    title: formTitle(spec, 'Confirm'),
+                    placeholder: spec.subtitle,
+                    items: confirmationItems(spec, state, dontAskAgain),
+                    step: stepFor(spec, state.screen, state),
+                    totalSteps: totalSteps(spec, state),
+                    back: true,
+                });
+
+            if (picked === undefined) {
+                state = goBack(state) ?? reviewState(state);
+                continue;
+            }
+            if (picked === POPUP_BACK) {
+                const previous = goBack(state);
+                if (!previous) {
+                    return 'menu';
+                }
+                state = previous;
+                continue;
+            }
+            if (picked.kind === 'dontAsk') {
+                const setting = await chooseDontAskAgain(popup, spec, state, dontAskAgain);
+                if (setting === POPUP_BACK) {
+                    continue;
+                }
+                dontAskAgain = setting;
+                continue;
+            }
+            if (picked.kind === 'confirm') {
+                if (dontAskAgain && spec.confirmSettingId) {
+                    await vscode.workspace
+                        .getConfiguration()
+                        .update(spec.confirmSettingId, false, vscode.ConfigurationTarget.Global);
+                }
+                const result = await execute(deps, popup, spec, state.values);
+                if (result.kind === 'hidden') {
+                    return 'menu';
+                }
+                state = resultState(state, result);
+                continue;
+            }
+
+            continue;
+        }
+
+        const result = state.screen;
+        const picked = await popup.choose<ResultChoice>({
+            title: formTitle(spec, result.ok ? 'Finished' : 'Failed'),
+            placeholder: spec.subtitle,
+            items: resultItems(result),
+            step: stepFor(spec, result, state),
+            totalSteps: totalSteps(spec, state),
+            back: true,
+        });
+
+        if (picked === undefined) {
+            state = goBack(state) ?? reviewState(state);
+            continue;
+        }
+        if (picked === POPUP_BACK || picked.kind === 'back') {
+            const previous = goBack(state);
+            if (!previous) {
+                return 'menu';
+            }
+            state = previous;
+            continue;
+        }
+        if (picked.kind === 'close') {
+            popup.close();
+            return 'close';
+        }
+    }
+}
+
+async function runOwnedForm(
+    deps: FormDeps,
+    popup: PopupSession | undefined,
+    spec: FormSpec,
+): Promise<'menu' | 'close'> {
+    const session = popup ?? new PopupSession();
+    try {
+        return await runForm(deps, session, spec);
+    } finally {
+        if (!popup) {
+            session.dispose();
+        }
+    }
+}
+
+type ReviewChoice =
+    | { kind: 'field'; id: string }
+    | { kind: 'submit' };
+
+type ConfirmChoice =
+    | { kind: 'warning' }
+    | { kind: 'dontAsk' }
+    | { kind: 'confirm' };
+
+type ResultChoice = { kind: 'detail' } | { kind: 'back' } | { kind: 'close' };
+
+type ExecutionResult =
+    | { kind: 'result'; ok: boolean; text: string }
+    | { kind: 'hidden' };
+
+function reviewItems(
+    spec: FormSpec,
+    state: QuickFormState,
+): Array<{ label: string; description: string; value: ReviewChoice }> {
+    return [
+        ...spec.fields.map((field) => ({
+            label: field.label,
+            description: fieldSummary(field, state.values[field.id]),
+            value: { kind: 'field' as const, id: field.id },
+        })),
+        {
+            label: formActionLabel(spec, state.values),
+            description: requiresConfirmation(spec, state.values)
+                ? 'Review warning before running'
+                : 'Run now',
+            value: { kind: 'submit' as const },
+        },
+    ];
+}
+
+function confirmationItems(
+    spec: FormSpec,
+    state: QuickFormState,
+    dontAskAgain: boolean,
+): Array<{
+    label: string;
+    description?: string;
+    detail?: string;
+    value: ConfirmChoice;
+}> {
+    const items: Array<{
+        label: string;
+        description?: string;
+        detail?: string;
+        value: ConfirmChoice;
+    }> = [
+        {
+            label: 'Warning',
+            description: 'Review before running',
+            detail: interpolate(spec.confirmMessage, state.values),
+            value: { kind: 'warning' },
+        },
+    ];
+
+    if (spec.confirmSettingId) {
+        items.push({
+            label: "Don't ask again",
+            description: dontAskAgain ? 'On' : 'Off',
+            value: { kind: 'dontAsk' },
+        });
     }
 
-    const panel = vscode.window.createWebviewPanel(
-        spec.viewType,
-        spec.title,
-        vscode.ViewColumn.Active,
-        { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] },
-    );
-
-    openPanels.set(spec.viewType, panel);
-    openTargets.set(spec.viewType, key);
-    // Identity-checked: a refresh disposes the previous panel for this view type,
-    // and that dispose must not evict the replacement registered just above. The
-    // target is removed under the same guard, so the two maps cannot fall out of
-    // step whether the dispose handler runs synchronously or is deferred.
-    panel.onDidDispose(() => {
-        if (openPanels.get(spec.viewType) === panel) {
-            openPanels.delete(spec.viewType);
-            openTargets.delete(spec.viewType);
-        }
+    items.push({
+        label: 'Confirm',
+        description: 'Run now',
+        value: { kind: 'confirm' },
     });
+    return items;
+}
 
-    panel.webview.html = renderFormHtml(spec, crypto.randomBytes(16).toString('base64'));
-
-    panel.webview.onDidReceiveMessage(async (message: SubmitMessage | { type: 'cancel' }) => {
-        if (message.type === 'cancel') {
-            panel.dispose();
-            return;
-        }
-
-        if (message.type !== 'submit') {
-            return;
-        }
-
-        // Only forms that read a setting may turn it off. Otherwise ticking
-        // "Don't ask again" here would disable another command's confirmation.
-        if (message.dontAskAgain && spec.confirmSettingId) {
-            await vscode.workspace
-                .getConfiguration()
-                .update(spec.confirmSettingId, false, vscode.ConfigurationTarget.Global);
-        }
-
-        await execute(deps, spec, panel, message.values, message.dontAskAgain);
+async function chooseDontAskAgain(
+    popup: PopupSession,
+    spec: FormSpec,
+    state: QuickFormState,
+    dontAskAgain: boolean,
+): Promise<boolean | typeof POPUP_BACK> {
+    const setting = await popup.choose({
+        title: formTitle(spec, "Don't ask again"),
+        placeholder: spec.subtitle,
+        items: currentFirst([false, true], dontAskAgain).map((value) => ({
+            label: value ? 'On' : 'Off',
+            value,
+        })),
+        step: stepFor(spec, state.screen, state),
+        totalSteps: totalSteps(spec, state),
+        back: true,
     });
+    return setting === undefined ? POPUP_BACK : setting;
+}
+
+async function editField(
+    popup: PopupSession,
+    spec: FormSpec,
+    state: QuickFormState,
+    field: Field,
+): Promise<string | boolean | typeof POPUP_BACK | undefined> {
+    const screen = {
+        title: formTitle(spec, field.label),
+        placeholder: fieldHint(spec, field),
+        step: stepFor(spec, state.screen, state),
+        totalSteps: totalSteps(spec, state),
+        back: true,
+    };
+
+    if (field.kind === 'text' || field.kind === 'textarea') {
+        return popup.input({
+            ...screen,
+            value: String(state.values[field.id] ?? ''),
+        });
+    }
+
+    if (field.kind === 'select') {
+        return popup.choose({
+            ...screen,
+            items: currentFirst(
+                field.options,
+                typeof state.values[field.id] === 'string'
+                    ? (state.values[field.id] as string)
+                    : undefined,
+            ).map((option) => ({ label: option, value: option })),
+        });
+    }
+
+    return popup.choose({
+        ...screen,
+        items: currentFirst([true, false], state.values[field.id] === true).map((value) => ({
+            label: value ? 'On' : 'Off',
+            value,
+        })),
+    });
+}
+
+function resultItems(
+    result: Extract<FormScreen, { kind: 'result' }>,
+): Array<{ label: string; description?: string; value: ResultChoice }> {
+    return [
+        {
+            label: result.ok ? 'Finished' : 'Failed',
+            description: conciseOutput(result.text),
+            value: { kind: 'detail' },
+        },
+        { label: 'Back to form', value: { kind: 'back' } },
+        { label: 'Close', value: { kind: 'close' } },
+    ];
 }
 
 async function execute(
     deps: FormDeps,
+    popup: PopupSession,
     spec: FormSpec,
-    panel: vscode.WebviewPanel,
     values: FormValues,
-    confirmDisabled: boolean,
-): Promise<void> {
+): Promise<ExecutionResult> {
     let args: string[];
     try {
         args = spec.buildArgs(values);
     } catch (err) {
-        await post(panel, false, errorText(err), confirmDisabled);
-        return;
+        const text = errorText(err);
+        deps.output.appendLine(`Versori: could not build ${spec.heading} command`);
+        deps.output.appendLine(text);
+        deps.output.appendLine('');
+        return { kind: 'result', ok: false, text };
     }
 
-    const cmd: CommandSpec = {
+    const cwd =
+        spec.commandCwd === undefined
+            ? deps.state.projectDir
+            : spec.commandCwd ?? undefined;
+    const command = {
         args,
-        cwd: deps.state.projectDir,
+        cwd,
         context: contextFor(deps.state),
-        json: false,
+        json: false as const,
     };
     const dryRun = readBoolean(values, spec.dryRunFieldId);
 
     try {
+        popup.loading(spec.heading, 'Running command…');
         const result = await vscode.window.withProgress(
             { location: vscode.ProgressLocation.Notification, title: `Versori: ${spec.heading}` },
-            () => run(deps.bin, cmd),
+            () => run(deps.bin, command),
         );
-
-        deps.output.appendLine(`$ ${displayCommand(cmd)}`);
-        deps.output.appendLine(result.stdout.trimEnd());
-        deps.output.appendLine('');
-
-        await post(panel, true, result.stdout || '(no output)', confirmDisabled);
+        const text = outputText(result.stdout, result.stderr);
+        appendOutput(deps, command, text);
 
         if (!dryRun) {
-            vscode.window.showInformationMessage(spec.successMessage(values));
+            if (popup.isVisible()) {
+                await vscode.window.showInformationMessage(spec.successMessage(values));
+            }
             spec.onLiveSuccess?.();
         }
+        return popup.isVisible()
+            ? { kind: 'result', ok: true, text }
+            : { kind: 'hidden' };
     } catch (err) {
-        deps.output.appendLine(`$ ${displayCommand(cmd)}`);
-        deps.output.appendLine(errorText(err));
-        deps.output.appendLine('');
-
-        await post(panel, false, errorText(err), confirmDisabled);
+        const text = errorText(err);
+        appendOutput(deps, command, text);
+        return popup.isVisible()
+            ? { kind: 'result', ok: false, text }
+            : { kind: 'hidden' };
     }
 }
 
-function post(
-    panel: vscode.WebviewPanel,
-    ok: boolean,
+function appendOutput(
+    deps: FormDeps,
+    command: { args: string[]; cwd?: string; context?: string; json?: boolean },
     text: string,
-    confirmDisabled: boolean,
-): Thenable<boolean> {
-    return panel.webview.postMessage({ type: 'result', ok, text, confirmDisabled });
+): void {
+    deps.output.appendLine(`$ ${displayCommand(command)}`);
+    deps.output.appendLine(text);
+    deps.output.appendLine('');
+}
+
+function outputText(stdout: string, stderr: string): string {
+    const output = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n');
+    return output || '(no output)';
+}
+
+function reviewState(state: QuickFormState): QuickFormState {
+    return { ...state, screen: { kind: 'review' }, history: [] };
+}
+
+function resultState(
+    state: QuickFormState,
+    result: Extract<ExecutionResult, { kind: 'result' }>,
+): QuickFormState {
+    return {
+        ...state,
+        screen: { kind: 'result', ok: result.ok, text: result.text },
+        history: [{ kind: 'review' }],
+    };
+}
+
+function formTitle(spec: FormSpec, suffix?: string): string {
+    return suffix ? `${spec.heading} · ${suffix}` : spec.heading;
+}
+
+function fieldHint(spec: FormSpec, field: Field): string {
+    const hint = field.hint ?? (field.kind === 'text' || field.kind === 'textarea'
+        ? field.placeholder
+        : undefined);
+    return hint ? `${spec.subtitle} · ${hint}` : spec.subtitle;
+}
+
+function conciseOutput(text: string): string {
+    const firstLine = text.split(/\r?\n/).find((line) => line.trim())?.trim() ?? '(no output)';
+    return firstLine.length > 200 ? `${firstLine.slice(0, 200)}...` : firstLine;
 }
 
 function projectName(state: ResolvedState): string {

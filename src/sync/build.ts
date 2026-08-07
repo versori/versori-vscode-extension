@@ -1,3 +1,7 @@
+import * as path from 'node:path';
+
+import { ResolvedState } from '../resolver/types';
+
 export interface SyncValues {
     projectId: string;
     directory: string;
@@ -14,6 +18,38 @@ export interface ProjectPickItem {
     label: string;
     description: string;
     projectId: string;
+}
+
+export function normalizeSyncDirectory(input: string, workspaceRoot?: string): string {
+    const trimmed = input.trim();
+    if (!trimmed) {
+        throw new Error('a target directory is required');
+    }
+    return path.isAbsolute(trimmed)
+        ? path.normalize(trimmed)
+        : path.resolve(workspaceRoot ?? process.cwd(), trimmed);
+}
+
+export function syncState(
+    state: ResolvedState,
+    projectId: string,
+    directory: string,
+): ResolvedState {
+    if (state.projectId === projectId && state.projectDir === directory) {
+        return state;
+    }
+
+    const activeContextName =
+        state.activeContextName ?? (state.source === 'active' ? state.contextName : undefined);
+
+    return {
+        projectId,
+        projectDir: directory,
+        contextName: activeContextName,
+        activeContextName,
+        source: activeContextName ? 'active' : 'none',
+        overridesActive: false,
+    };
 }
 
 /**

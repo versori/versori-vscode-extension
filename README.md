@@ -31,31 +31,42 @@ Click the status bar item. Entries appear in this order below. Most project-scop
 show when the file you are looking at is inside a synced project; **Sync...** is always available
 so it can bring a project into a directory. Organisation-wide entries always show.
 
-**Dry run by default** (project-scoped) — both forms open with **Dry run** ticked, so the first
-click lists the files that would upload and changes nothing. They differ in what happens after
-you untick it:
-- **Deploy...** — pick environment, enter a description, review the dry-run. Unticking **Dry
-  run** turns the button red; the next click raises a confirmation bar naming the project and
-  the environment, and you confirm there. `versori.confirmDeploy` turns that last gate off if
-  you do not want it.
-- **Save version...** — name and description collected up front. Unticking **Dry run** submits
-  on the next click with **no extra confirmation**: a version is an inert snapshot that is
-  explicitly *not* deployed, so it does not need deploy's gate.
+**One extension popup for mutations** — **Deploy**, **Save version**, **Resources**, and **Sync**
+all stay inside the same extension QuickPick. Each action moves through screens in that popup:
+**Back** returns to the previous step, while **Escape** cancels the current step or backs out to
+the previous one. Text and textarea values are entered directly in popup input screens; no
+separate panel is opened for the mutation.
+
+**Dry run by default** (project-scoped) — Deploy and Save version start with **Dry run** ticked,
+so the first click lists the files that would upload and changes nothing. They differ in what
+happens after you untick it:
+- **Deploy...** — pick an environment, enter the optional version name and description in the
+  popup, then review the dry run. Unticking **Dry run** and choosing the live action opens a
+  **popup confirmation screen** naming the project and environment; confirm there to run it.
+  `versori.confirmDeploy` turns that last gate off if you do not want it.
+- **Save version...** — enter the required name and description in the popup. Unticking **Dry
+  run** submits on the next click with **no extra confirmation**: a version is an inert snapshot
+  that is explicitly *not* deployed, so it does not need Deploy's gate.
 
 **A mutation behind a confirmation** (project-scoped):
-- **Resources...** — view and edit CPU/memory/storage requests and limits, replicas, the
-  autoscaling maximum, static IP and service account for an environment, via `projects edit`,
-  behind the same in-panel confirmation bar as Deploy's danger button — unlike Deploy's, this one
-  cannot be turned off with a setting
+- **Resources...** — choose an environment when needed, then view and edit CPU/memory/storage
+  requests and limits, replicas, the autoscaling maximum, static IP and service account in the
+  same popup. `projects edit` always ends at a **popup confirmation screen**; this gate cannot
+  be turned off with a setting.
 
-**Sync...** (always available) — choose a project from `projects list`, then choose a target
-directory when it is not the current project. The form starts with **Dry run** ticked and shows
-the create/update/delete preview without changing local files. Unticking it exposes a mandatory
-confirmation bar that warns that live sync can overwrite local changes and delete local files
-missing from the remote project; only accepting that bar sends `projects sync --confirm`. There is
-no “Don't ask again” option for Sync.
+**Sync...** (always available) — choose a project from `projects list`, then choose a workspace
+folder or select **Type another folder path**. A typed absolute or workspace-relative path is
+accepted even when the target folder has no existing `.versori`. The Sync screen starts with
+**Dry run** ticked and shows the create/update/delete preview without changing local files.
+The CLI may create a nonexistent target directory during that dry run, but it does not write
+project files until live confirmation.
+Unticking it exposes a mandatory **popup confirmation screen** warning that live sync can
+overwrite local changes and delete local files missing from the remote project; only accepting
+that warning sends `projects sync --confirm`. There is no “Don't ask again” option for Sync.
 
-**Read-only** — output goes to the "Versori" output channel:
+**Read-only result panels remain separate** from the mutating QuickPick wizard. Their existing
+views still open outside the popup, and command output is also recorded in the "Versori" output
+channel:
 
 | Entry | Scope | Command | Notes |
 |---|---|---|---|

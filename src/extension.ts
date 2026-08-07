@@ -70,6 +70,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 state: lastState,
                 output,
                 onContextChanged: invalidateAndRefresh,
+                getState: () => lastState,
             });
         }),
     );

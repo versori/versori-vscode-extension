@@ -4,7 +4,8 @@ import * as vscode from 'vscode';
 import { CliError, runJson } from '../cli';
 import { contextFor } from '../commands/target';
 import { resolveEnvironmentNames } from '../environments';
-import { FormDeps, show } from '../forms/panel';
+import { FormDeps, runForm } from '../forms/panel';
+import { POPUP_BACK, PopupSession } from '../forms/popup';
 import { ResolvedState } from '../resolver/types';
 import {
     buildEditArgs,
@@ -22,24 +23,35 @@ import {
  * current state and `buildEditArgs` re-sends the fields that would otherwise be
  * dropped. See config.ts for the two flags that behave that way.
  */
-export async function openResourcesForm(deps: FormDeps): Promise<void> {
+export async function openResourcesForm(
+    deps: FormDeps,
+    popup: PopupSession,
+): Promise<'menu' | 'close'> {
+    popup.close();
     const environments = await resolveEnvironmentNames(deps);
     if (!environments) {
-        return;
+        return 'menu';
     }
 
-    const environment =
+    const picked =
         environments.length === 1
             ? environments[0]
-            : await vscode.window.showQuickPick(environments, {
+            : await popup.choose({
                   title: 'Edit resources for which environment?',
+                  items: environments.map((environment) => ({
+                      label: environment,
+                      value: environment,
+                  })),
+                  back: true,
               });
-    if (!environment) {
-        return;
+    if (picked === undefined || picked === POPUP_BACK) {
+        return 'menu';
     }
+    const environment = picked;
 
     let current: ResourceConfig | undefined;
     try {
+        popup.loading('Resources', 'Reading current resource configuration…');
         const details = await vscode.window.withProgress(
             { location: vscode.ProgressLocation.Window, title: 'Versori: reading resources' },
             () =>
@@ -49,27 +61,29 @@ export async function openResourcesForm(deps: FormDeps): Promise<void> {
                     context: contextFor(deps.state),
                 }),
         );
+        if (!popup.isVisible()) {
+            return 'menu';
+        }
         current = readResourceConfig(details, environment);
     } catch (err) {
+        popup.close();
         const message = err instanceof CliError ? err.stderr || err.message : String(err);
         deps.output.appendLine(`could not read resources: ${message}`);
-        void vscode.window.showErrorMessage(`Versori: could not read resources — ${message}`);
-        return;
+        await vscode.window.showErrorMessage(`Versori: could not read resources — ${message}`);
+        return 'menu';
     }
 
     if (!current) {
-        void vscode.window.showErrorMessage(
+        popup.close();
+        await vscode.window.showErrorMessage(
             `Versori: no environment named "${environment}" in this project.`,
         );
-        return;
+        return 'menu';
     }
 
     const config = current;
 
-    show(deps, {
-        // Keyed by environment: `show` reveals rather than replaces an open
-        // panel, so a single key would make the second environment unreachable.
-        viewType: `versori.resourcesForm.${environment}`,
+    return runForm(deps, popup, {
         title: `Resources · ${projectName(deps.state)}`,
         heading: `Resources · ${environment}`,
         subtitle: subtitle(deps.state),
@@ -77,10 +91,6 @@ export async function openResourcesForm(deps: FormDeps): Promise<void> {
         dryRunFieldId: '',
         dryRunLabel: '',
         liveLabel: `Update ${environment}`,
-        // `config` below is a snapshot of the read above, and buildEditArgs
-        // re-sends replicas and autoscaling from it. Reopening must therefore
-        // rebuild the panel, or a submit would revert an out-of-band change.
-        refreshOnReopen: true,
         confirmWhenLive: true,
         // Always confirm: there is no dry run to fall back on, and no setting
         // that turning this off could belong to.

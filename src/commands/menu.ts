@@ -13,6 +13,7 @@ import { openResourcesForm } from '../resources/panel';
 import { ENVIRONMENT_ID, environmentArgs, environmentControl } from '../results/controls';
 import { showResults } from '../results/panel';
 import { openSyncForm } from '../sync/panel';
+import { POPUP_BACK, PopupSession } from '../forms/popup';
 import { projectArgs } from './target';
 
 export interface MenuDeps {
@@ -23,10 +24,12 @@ export interface MenuDeps {
     output: vscode.OutputChannel;
     /** Called after the active context changes, so the status bar can refresh. */
     onContextChanged: () => void;
+    /** Reads the latest resolver state before the root menu is rendered. */
+    getState: () => ResolvedState;
 }
 
 interface ActionItem extends vscode.QuickPickItem {
-    run?: (deps: MenuDeps) => Promise<void>;
+    run?: (deps: MenuDeps, popup: PopupSession) => Promise<'menu' | 'close'>;
 }
 
 const SEPARATOR: ActionItem = {
@@ -35,20 +38,34 @@ const SEPARATOR: ActionItem = {
 };
 
 export async function showMenu(deps: MenuDeps): Promise<void> {
-    const picked = await vscode.window.showQuickPick(buildItems(deps), {
-        title: menuTitle(deps.state),
-        placeHolder: 'Versori',
-        matchOnDescription: true,
-    });
-
-    if (!picked?.run) {
-        return;
-    }
-
+    const popup = new PopupSession();
     try {
-        await picked.run(deps);
-    } catch (err) {
-        await reportError(deps, err);
+        while (true) {
+            const menuDeps: MenuDeps = { ...deps, state: deps.getState() };
+            const picked = await popup.choose<ActionItem>({
+                title: menuTitle(menuDeps.state),
+                placeholder: 'Versori',
+                matchOnDescription: true,
+                items: buildItems(menuDeps).map((item) => ({ ...item, value: item })),
+            });
+
+            if (picked === undefined || picked === POPUP_BACK || !picked.run) {
+                return;
+            }
+
+            try {
+                const result = await picked.run(menuDeps, popup);
+                if (result === 'close') {
+                    return;
+                }
+            } catch (err) {
+                popup.close();
+                await reportError(menuDeps, err);
+                return;
+            }
+        }
+    } finally {
+        popup.dispose();
     }
 }
 
@@ -69,17 +86,17 @@ function buildItems(deps: MenuDeps): ActionItem[] {
             {
                 label: '$(rocket) Deploy...',
                 description: 'dry run by default',
-                run: (deps) => openDeployForm(deps),
+                run: (deps, popup) => openDeployForm(deps, popup),
             },
             {
                 label: '$(save) Save version...',
                 description: 'checkpoint only — does not deploy',
-                run: async (deps) => openSaveVersionForm(deps),
+                run: (deps, popup) => openSaveVersionForm(deps, popup),
             },
             {
                 label: '$(dashboard) Resources...',
                 description: 'CPU, memory, replicas, static IP',
-                run: (deps) => openResourcesForm(deps),
+                run: (deps, popup) => openResourcesForm(deps, popup),
             },
             SEPARATOR,
             { label: '$(output) Logs', run: showLogs },
@@ -129,29 +146,40 @@ function buildItems(deps: MenuDeps): ActionItem[] {
         description: deps.state.activeContextName ?? 'none active',
         run: switchContext,
     });
-    items.push({ label: '$(list-flat) Show output log', run: async (d) => d.output.show(true) });
+    items.push({
+        label: '$(list-flat) Show output log',
+        run: async (d, popup) => {
+            popup.close();
+            d.output.show(true);
+            return 'close';
+        },
+    });
 
     return items;
 }
 
 /* ------------------------------------------------------------------ views */
 
-async function showLogs(deps: MenuDeps): Promise<void> {
+async function showLogs(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
     const environments = await resolveEnvironmentNames(deps);
     if (!environments) {
-        return;
+        return 'menu';
     }
 
     await showLogPanel(deps, environments);
+    return 'close';
 }
 
-async function showIssues(deps: MenuDeps): Promise<void> {
+async function showIssues(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
     const environments = await resolveEnvironmentNames(deps);
     if (!environments) {
-        return;
+        return 'menu';
     }
 
     await showIssuesPanel(deps, environments);
+    return 'close';
 }
 
 /**
@@ -161,10 +189,11 @@ async function showIssues(deps: MenuDeps): Promise<void> {
  * the argv stays `projects systems` while the label matches the web app. Do not
  * "fix" the mismatch — the CLI has no `connectors` command.
  */
-async function showConnectors(deps: MenuDeps): Promise<void> {
+async function showConnectors(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
     const environments = await resolveEnvironmentNames(deps);
     if (!environments) {
-        return;
+        return 'menu';
     }
 
     await showResults(deps, {
@@ -175,13 +204,18 @@ async function showConnectors(deps: MenuDeps): Promise<void> {
         controlArgs: environmentArgs,
         preferred: ['name', 'id', 'templateBaseUrl'],
     });
+    return 'close';
 }
 
 /** Static (non-dynamic) connections bound to a project environment. */
-async function showStaticConnections(deps: MenuDeps): Promise<void> {
+async function showStaticConnections(
+    deps: MenuDeps,
+    popup: PopupSession,
+): Promise<'menu' | 'close'> {
+    popup.close();
     const environments = await resolveEnvironmentNames(deps);
     if (!environments) {
-        return;
+        return 'menu';
     }
 
     await showResults(deps, {
@@ -192,15 +226,18 @@ async function showStaticConnections(deps: MenuDeps): Promise<void> {
         controlArgs: environmentArgs,
         preferred: ['name', 'id', 'system', 'connectionTemplateId'],
     });
+    return 'close';
 }
 
-async function showVersions(deps: MenuDeps): Promise<void> {
+async function showVersions(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
     await showResults(deps, {
         id: 'versions',
         heading: () => 'Versions',
         baseArgs: ['projects', 'versions', 'list', ...projectArgs(deps.state)],
         preferred: ['name', 'createdAt', 'created', 'description', 'id'],
     });
+    return 'close';
 }
 
 /**
@@ -210,76 +247,94 @@ async function showVersions(deps: MenuDeps): Promise<void> {
  * workflow state and belong in the terminal, where their confirmation prompts
  * are. See README.md.
  */
-async function showKvEntries(deps: MenuDeps): Promise<void> {
+async function showKvEntries(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
     const environments = await resolveEnvironmentNames(deps);
     if (!environments) {
-        return;
+        return 'menu';
     }
 
     await showKvPanel(deps, environments);
+    return 'close';
 }
 
 /** KV stores in the organisation. Store ids feed the CLI's raw `--store` mode. */
-async function showKvStores(deps: MenuDeps): Promise<void> {
+async function showKvStores(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
     await showResults(deps, {
         id: 'kvStores',
         heading: () => 'KV stores',
         baseArgs: ['kv', 'stores', 'list'],
         preferred: ['name', 'id', 'createdAt'],
     });
+    return 'close';
 }
 
-async function showConnections(deps: MenuDeps): Promise<void> {
+async function showConnections(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
     // Org-scoped: `connections list` has no --project flag.
+    popup.close();
     await showResults(deps, {
         id: 'connections',
         heading: () => 'Connections',
         baseArgs: ['connections', 'list'],
         preferred: ['name', 'system', 'id'],
     });
+    return 'close';
 }
 
 /* ---------------------------------------------------------------- actions */
 
-async function switchContext(deps: MenuDeps): Promise<void> {
+async function switchContext(
+    deps: MenuDeps,
+    popup: PopupSession,
+): Promise<'menu' | 'close'> {
     // The raw response contains full JWTs — only names are ever extracted from
     // it, and it is never written to the output channel.
+    popup.loading('Switch context', 'Loading contexts…');
     const contexts = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Window, title: 'Versori: loading contexts' },
         () => runJson<unknown>(deps.bin, { args: ['context', 'list'] }),
     );
+    if (!popup.isVisible()) {
+        return 'menu';
+    }
 
     const entries = parseContextList(contexts);
     if (entries.length === 0) {
-        vscode.window.showWarningMessage('Versori: no contexts configured.');
-        return;
+        popup.close();
+        await vscode.window.showWarningMessage('Versori: no contexts configured.');
+        return 'menu';
     }
 
-    const picked = await vscode.window.showQuickPick(
-        entries.map((entry) => ({
+    const picked = await popup.choose({
+        title: 'Switch active Versori context',
+        back: true,
+        items: entries.map((entry) => ({
             label: entry.name,
             description: entry.active ? 'active' : undefined,
+            value: entry.name,
         })),
-        { title: 'Switch active Versori context' },
-    );
-    if (!picked) {
-        return;
+    });
+    if (picked === undefined || picked === POPUP_BACK) {
+        return 'menu';
     }
 
     await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Window, title: `Versori: selecting ${picked.label}` },
-        () => run(deps.bin, { args: ['context', 'select', picked.label], json: false }),
+        { location: vscode.ProgressLocation.Window, title: `Versori: selecting ${picked}` },
+        () => run(deps.bin, { args: ['context', 'select', picked], json: false }),
     );
 
     deps.onContextChanged();
+    popup.close();
 
     if (deps.state.source === 'versori-file') {
         // Honest warning: inside a project that pins a context, switching the
         // active one changes nothing for commands run here.
-        vscode.window.showInformationMessage(
-            `Active context is now "${picked.label}", but this project pins "${deps.state.contextName}" in .versori, which still wins here.`,
+        await vscode.window.showInformationMessage(
+            `Active context is now "${picked}", but this project pins "${deps.state.contextName}" in .versori, which still wins here.`,
         );
     }
+    return 'close';
 }
 
 async function reportError(deps: MenuDeps, err: unknown): Promise<void> {

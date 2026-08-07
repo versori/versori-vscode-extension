@@ -66,27 +66,31 @@ export async function loadEnvironments(
  * them to type an environment name — a wrong guess there produces an empty
  * result set that looks like a real answer.
  */
-export function reportEnvironmentProblem(
+export async function reportEnvironmentProblem(
     lookup: EnvironmentLookup,
     output: vscode.OutputChannel,
-): void {
+): Promise<void> {
     if (lookup.error) {
-        void vscode.window
-            .showErrorMessage(
-                `Versori: could not read this project's environments — ${firstLine(lookup.error)}`,
-                'Show output',
-            )
-            .then((action) => {
-                if (action === 'Show output') {
-                    output.show(true);
-                }
-            });
+        await reportEnvironmentError(lookup.error, output);
         return;
     }
 
-    void vscode.window.showWarningMessage(
+    await vscode.window.showWarningMessage(
         'Versori: this project has no environments yet. Create one with `versori projects environments create`.',
     );
+}
+
+async function reportEnvironmentError(
+    error: string,
+    output: vscode.OutputChannel,
+): Promise<void> {
+    const action = await vscode.window.showErrorMessage(
+        `Versori: could not read this project's environments — ${firstLine(error)}`,
+        'Show output',
+    );
+    if (action === 'Show output') {
+        output.show(true);
+    }
 }
 
 function firstLine(text: string): string {
@@ -112,7 +116,7 @@ export async function resolveEnvironmentNames(
     const lookup = await loadEnvironments(target.bin, target.state, target.output);
 
     if (lookup.names.length === 0) {
-        reportEnvironmentProblem(lookup, target.output);
+        await reportEnvironmentProblem(lookup, target.output);
         return undefined;
     }
 
