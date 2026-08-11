@@ -8,6 +8,7 @@ import { resolveEnvironmentNames } from '../environments';
 import { FormDeps } from '../forms/panel';
 import { POPUP_BACK, PopupSession } from '../forms/popup';
 import { ResolvedState } from '../resolver/types';
+import { handleNavMessage } from '../webview/nav';
 import {
     buildEditArgs,
     configFromEditor,
@@ -135,6 +136,9 @@ async function showResourcesPanel(
     panel.webview.html = renderResourcesHtml(crypto.randomBytes(16).toString('base64'));
 
     panel.webview.onDidReceiveMessage((message: { type?: string; editor?: ResourceEditorState }) => {
+        if (handleNavMessage(message, panel)) {
+            return;
+        }
         if (message?.type === 'apply' && message.editor) {
             void applyResources(entry, message.editor);
         }

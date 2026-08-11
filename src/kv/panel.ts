@@ -22,6 +22,7 @@ import {
 } from './args';
 import { parseKvCount, toKvPage } from './entries';
 import { KvCountMessage, KvPayload, renderKvHtml } from './html';
+import { handleNavMessage } from '../webview/nav';
 
 export interface KvDeps {
     bin: string;
@@ -124,6 +125,9 @@ export async function showKvPanel(deps: KvDeps, environments: string[]): Promise
     panel.webview.html = renderKvHtml(crypto.randomBytes(16).toString('base64'));
 
     panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
+        if (handleNavMessage(message, panel)) {
+            return;
+        }
         if (message?.controls) {
             entry.values = { ...entry.values, ...message.controls };
         }

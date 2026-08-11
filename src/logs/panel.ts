@@ -17,6 +17,7 @@ import {
     validateLogRange,
 } from '../results/controls';
 import { redact } from '../results/rows';
+import { handleNavMessage } from '../webview/nav';
 import { fieldKeys, LogEntry, severitiesOf, toLogEntries } from './entries';
 import { EMPTY_FILTER, LogFilter, visibleIndices } from './filter';
 import { LogsPayload, renderLogsHtml } from './html';
@@ -90,6 +91,9 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
 
     panel.webview.onDidReceiveMessage(
         (message: { type?: string; controls?: ControlValues; filter?: LogFilter }) => {
+            if (handleNavMessage(message, panel)) {
+                return;
+            }
             if (message?.type === 'refresh') {
                 if (message.controls) {
                     entry.values = { ...entry.values, ...message.controls };

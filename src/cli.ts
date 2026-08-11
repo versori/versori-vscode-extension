@@ -180,8 +180,9 @@ export function parseNdjson(text: string): unknown[] | undefined {
  */
 export async function runJson<T>(bin: string, spec: CommandSpec): Promise<T | undefined> {
     const { stdout } = await run(bin, { ...spec, json: true });
+    const trimmed = stdout.trim();
 
-    if (!stdout.trim()) {
+    if (!trimmed || trimmed === '(no items)') {
         return undefined;
     }
 

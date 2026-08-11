@@ -256,6 +256,7 @@ export const RESOURCES_SCRIPT = `
 (function () {
   const vscode = acquireVsCodeApi();
   const el = (id) => document.getElementById(id);
+  if (typeof wireNav === 'function') { wireNav(vscode); }
 
   const RANGES = ${JSON.stringify({
       cpu: {
@@ -313,6 +314,18 @@ export const RESOURCES_SCRIPT = `
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
+  }
+
+  function syncRange(key, value) {
+    const other = document.querySelector('input[type="range"][data-key="' + key + '"]');
+    if (other) {
+      other.value = String(value);
+    }
+    const bound = document.querySelector('[data-bound-for="' + key + '"]');
+    const range = RANGES[key];
+    if (bound && range) {
+      bound.textContent = formatFor(range.kind, value);
+    }
   }
 
   function setStatus(kind, text) {
@@ -403,23 +416,30 @@ export const RESOURCES_SCRIPT = `
     input.max = String(range.max);
     input.step = String(range.step);
     input.value = String(control.value);
+    input.dataset.key = key;
+    // Update in place — calling render() here tears down the <input> mid-drag
+    // and leaves the control click-only.
     input.addEventListener('input', () => {
       const next = Number(input.value);
       editor[key] = { mode: 'slider', value: next };
+      left.textContent = formatFor(range.kind, next);
+
       if (key === 'replicas' && editor.maxReplicas.mode === 'slider' && editor.maxReplicas.value < next) {
         editor.maxReplicas = { mode: 'slider', value: next };
+        syncRange('maxReplicas', next);
       }
       if (key === 'maxReplicas' && editor.replicas.mode === 'slider' && next < editor.replicas.value) {
         editor.maxReplicas = { mode: 'slider', value: editor.replicas.value };
         input.value = String(editor.replicas.value);
+        left.textContent = formatFor(range.kind, editor.replicas.value);
       }
-      render();
     });
     wrap.appendChild(input);
 
     const bounds = document.createElement('div');
     bounds.className = 'bounds';
     const left = document.createElement('span');
+    left.dataset.boundFor = key;
     left.textContent = formatFor(range.kind, control.value);
     const right = document.createElement('span');
     right.textContent = formatFor(range.kind, range.max);

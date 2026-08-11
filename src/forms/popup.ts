@@ -5,6 +5,12 @@ import { popupHideAction } from './popup-policy';
 export const POPUP_BACK = Symbol('popup-back');
 export type PopupResult<T> = T | typeof POPUP_BACK | undefined;
 
+/** Explicit Close (×) button shown on every popup screen. */
+const CLOSE_BUTTON: vscode.QuickInputButton = {
+    iconPath: new vscode.ThemeIcon('close'),
+    tooltip: 'Close',
+};
+
 export interface PopupItem<T> {
     label: string;
     value: T;
@@ -78,12 +84,19 @@ export class PopupSession {
         this.quickPick.prompt = undefined;
         this.quickPick.value = '';
         this.quickPick.items = [{ label: detail }];
-        this.quickPick.buttons = [];
+        this.quickPick.buttons = [CLOSE_BUTTON];
         this.quickPick.step = undefined;
         this.quickPick.totalSteps = undefined;
         this.quickPick.canSelectMany = false;
         this.quickPick.busy = true;
         this.quickPick.enabled = false;
+        this.screenSubscriptions = [
+            this.quickPick.onDidTriggerButton((button) => {
+                if (button === CLOSE_BUTTON) {
+                    this.close();
+                }
+            }),
+        ];
         this.visible = true;
         this.quickPick.show();
     }
@@ -117,7 +130,10 @@ export class PopupSession {
         this.quickPick.matchOnDescription = screen.matchOnDescription ?? false;
         this.quickPick.canSelectMany = canSelectMany;
         this.quickPick.items = items;
-        this.quickPick.buttons = screen.back ? [vscode.QuickInputButtons.Back] : [];
+        // Back (optional) then Close (always) — Close is the top-right ×.
+        this.quickPick.buttons = screen.back
+            ? [vscode.QuickInputButtons.Back, CLOSE_BUTTON]
+            : [CLOSE_BUTTON];
         this.quickPick.step = screen.step;
         this.quickPick.totalSteps = screen.totalSteps;
         this.quickPick.busy = false;
@@ -174,6 +190,11 @@ export class PopupSession {
                 this.quickPick.onDidTriggerButton((button) => {
                     if (button === vscode.QuickInputButtons.Back) {
                         finish(POPUP_BACK);
+                        return;
+                    }
+                    if (button === CLOSE_BUTTON) {
+                        // Same outcome as Escape: cancel the screen and unwind.
+                        finish(undefined);
                     }
                 }),
                 this.quickPick.onDidHide(cancelOnHide),

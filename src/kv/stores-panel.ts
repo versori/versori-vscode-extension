@@ -13,6 +13,7 @@ import {
     parseKvStoresList,
     parseProjectRefs,
 } from './stores';
+import { handleNavMessage } from '../webview/nav';
 
 export interface KvStoresDeps {
     bin: string;
@@ -62,6 +63,9 @@ export async function showKvStoresPanel(deps: KvStoresDeps): Promise<void> {
     panel.webview.html = renderResultsHtml(crypto.randomBytes(16).toString('base64'));
 
     panel.webview.onDidReceiveMessage((message: { type?: string }) => {
+        if (handleNavMessage(message, panel)) {
+            return;
+        }
         if (message?.type === 'refresh') {
             void load(entry);
         }

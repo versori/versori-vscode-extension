@@ -15,6 +15,7 @@ import {
 } from './args';
 import { renderVariablesHtml, VariablesPayload } from './html';
 import { parseSuccessfulJson, toVariableRows, VariableRow } from './rows';
+import { handleNavMessage } from '../webview/nav';
 
 export interface VariablesDeps {
     bin: string;
@@ -58,6 +59,9 @@ export async function showVariablesPanel(deps: VariablesDeps): Promise<void> {
     panel.webview.html = renderVariablesHtml(crypto.randomBytes(16).toString('base64'));
 
     panel.webview.onDidReceiveMessage((message: { type?: string; name?: string }) => {
+        if (handleNavMessage(message, panel)) {
+            return;
+        }
         if (message?.type === 'refresh') {
             void load(entry);
             return;

@@ -88,6 +88,7 @@ export const ACTIVATIONS_SCRIPT = `
 (function () {
   const vscode = acquireVsCodeApi();
   const el = (id) => document.getElementById(id);
+  if (typeof wireNav === 'function') { wireNav(vscode); }
 
   let payload = null;
   let controlValues = {};

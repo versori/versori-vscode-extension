@@ -32,6 +32,7 @@ import {
     toSchemaVariables,
     toSystemRows,
 } from './rows';
+import { handleNavMessage } from '../webview/nav';
 
 export interface ActivationsDeps {
     bin: string;
@@ -88,6 +89,9 @@ export async function showActivationsPanel(
 
     panel.webview.onDidReceiveMessage(
         (message: { type?: string; controls?: ControlValues; externalId?: string; label?: string }) => {
+            if (handleNavMessage(message, panel)) {
+                return;
+            }
             if (message?.type === 'refresh') {
                 if (message.controls) {
                     entry.values = { ...entry.values, ...message.controls };

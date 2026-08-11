@@ -27,6 +27,7 @@ import {
     toChannelRows,
 } from './notifications';
 import { toIssueRows } from './rows';
+import { handleNavMessage } from '../webview/nav';
 
 export interface IssuesDeps {
     bin: string;
@@ -95,6 +96,9 @@ export async function showIssuesPanel(deps: IssuesDeps, environments: string[]):
             change?: IssueChange;
             label?: string;
         }) => {
+            if (handleNavMessage(message, panel)) {
+                return;
+            }
             if (message?.type === 'refresh') {
                 if (message.controls) {
                     entry.values = { ...entry.values, ...message.controls };

@@ -15,6 +15,7 @@ import {
     Row,
     unwrapRows,
 } from './rows';
+import { handleNavMessage } from '../webview/nav';
 
 export interface ResultsRequest {
     /** Stable id, so re-running the same view reuses its panel. */
@@ -102,6 +103,9 @@ export async function showResults(deps: ResultsDeps, request: ResultsRequest): P
 
     panel.webview.onDidReceiveMessage(
         (message: { type?: string; controls?: ControlValues }) => {
+            if (handleNavMessage(message, panel)) {
+                return;
+            }
             if (message?.type !== 'refresh') {
                 return;
             }

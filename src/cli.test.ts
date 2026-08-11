@@ -175,6 +175,10 @@ describe('runJson', () => {
         await expect(runJson(stubBinary('\n  \n'), { args: ['x'] })).resolves.toBeUndefined();
     });
 
+    it('treats the CLI empty-list marker as no results', async () => {
+        await expect(runJson(stubBinary('(no items)\n'), { args: ['notifications', 'project', 'list'] })).resolves.toBeUndefined();
+    });
+
     it('parses real JSON output', async () => {
         await expect(
             runJson(stubBinary('{"type":"Log","items":[{"level":"info"}]}'), { args: ['x'] }),

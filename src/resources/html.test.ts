@@ -239,6 +239,8 @@ describe('renderResourcesHtml', () => {
         expect(html).toContain('Networking');
         expect(html).toContain('Advanced');
         expect(html).toContain('>Apply<');
+        expect(html).toContain('id="navBack"');
+        expect(html).toContain('id="navClose"');
         expect(html).toContain("script-src 'nonce-test-nonce'");
     });
 });
@@ -278,6 +280,28 @@ describe('RESOURCES_SCRIPT', () => {
         ]);
         expect(ui.byId.status.textContent).toBe('Updating…');
         expect(ui.byId.apply.disabled).toBe(true);
+    });
+
+    it('keeps the same range input across successive drag input events', () => {
+        const ui = mount(payload());
+        const before = walk(ui.byId.resources).find(
+            (node) => node.tag === 'input' && node.type === 'range' && node.value === '170',
+        );
+        expect(before).toBeTruthy();
+
+        before!.value = '180';
+        before!.fire('input');
+        before!.value = '190';
+        before!.fire('input');
+        before!.value = '200';
+        before!.fire('input');
+
+        const after = walk(ui.byId.resources).find(
+            (node) => node.tag === 'input' && node.type === 'range',
+        );
+        // Same node identity — a full re-render would replace it and break dragging.
+        expect(after).toBe(before);
+        expect(after?.value).toBe('200');
     });
 
     it('discards edits back to the baseline payload', () => {
