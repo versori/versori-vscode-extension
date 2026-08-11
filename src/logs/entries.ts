@@ -85,12 +85,37 @@ export function flattenDeep(value: unknown, prefix = '', depth = 0): LogField[] 
  * Accepts the NDJSON array `runJson` produces, and `undefined` — which is the
  * CLI's success-with-no-rows signal (it exits 0 and prints zero bytes).
  *
+ * The CLI emits ascending time order (oldest first). This viewer reverses that
+ * so the panel opens on the newest line — what a human scanning for a failure
+ * wants. Agents still get ascending NDJSON from the CLI itself.
+ *
  * Verified against real output: each NDJSON line is
  * { fields:{activationId,executionId,externalUserId,level,name,triggerName},
  *   message, severity, timestamp, error }
  */
 export function toLogEntries(raw: unknown): LogEntry[] {
-    return unwrapRows(raw).map(toEntry);
+    return unwrapRows(raw)
+        .map(toEntry)
+        .sort((a, b) => compareTimestampsDesc(a.rawTimestamp, b.rawTimestamp));
+}
+
+/** Newest first. Missing / unparseable timestamps sink to the bottom. */
+function compareTimestampsDesc(a: string, b: string): number {
+    const aMs = Date.parse(a);
+    const bMs = Date.parse(b);
+    const aOk = Number.isFinite(aMs);
+    const bOk = Number.isFinite(bMs);
+
+    if (aOk && bOk) {
+        return bMs - aMs;
+    }
+    if (aOk) {
+        return -1;
+    }
+    if (bOk) {
+        return 1;
+    }
+    return 0;
 }
 
 function toEntry(row: Row): LogEntry {

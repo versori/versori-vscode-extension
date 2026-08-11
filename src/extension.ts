@@ -9,6 +9,7 @@ import { FormDeps, openDeployForm, openSaveVersionForm } from './forms/panel';
 import { PopupSession } from './forms/popup';
 import { LocalContextResolver } from './resolver/local';
 import { ContextResolver, EMPTY_STATE, ResolvedState } from './resolver/types';
+import { VersoriSidebar } from './sidebar';
 import { VersoriStatusBar } from './statusbar';
 import { openSyncForm } from './sync/panel';
 
@@ -33,6 +34,11 @@ export function activate(context: vscode.ExtensionContext): void {
     // focus moves to a terminal. Never holds a resolved result — see Scope.
     let lastScope: Scope | undefined;
     let lastState: ResolvedState = EMPTY_STATE;
+    const sidebar = new VersoriSidebar(MENU_COMMAND, () => lastState);
+    context.subscriptions.push(
+        sidebar,
+        vscode.window.registerTreeDataProvider('versori.menu', sidebar),
+    );
 
     const cliPath = (): string | undefined => {
         const configured = vscode.workspace
@@ -50,12 +56,14 @@ export function activate(context: vscode.ExtensionContext): void {
                 .get<string>(CLI_PATH_SETTING, '')
                 .trim();
             statusBar.renderCliMissing(configured || undefined);
+            sidebar.refresh();
             return;
         }
 
         lastScope = currentScope(lastScope);
         lastState = resolver.resolve(lastScope?.dir, lastScope?.boundary);
         statusBar.render(lastState);
+        sidebar.refresh();
     };
 
     const invalidateAndRefresh = (): void => {

@@ -271,3 +271,239 @@ export function readResourceForm(values: FormValues): ResourceConfig {
         },
     };
 }
+
+// ---------------------------------------------------------------------------
+// Slider editor state (screenshot ranges from versori-ai Environment Config)
+//
+// Out-of-range or unparseable Kubernetes quantities stay in `custom`/`unset`
+// mode with the original string. The web app clamps; this editor must not.
+// ---------------------------------------------------------------------------
+
+export const CPU_MIN_M = 50;
+export const CPU_MAX_M = 500;
+export const CPU_STEP_M = 10;
+export const CPU_DEFAULT_M = 50;
+
+export const MEMORY_MIN_MB = 200;
+export const MEMORY_MAX_MB = 2000;
+export const MEMORY_STEP_MB = 50;
+export const MEMORY_DEFAULT_MB = 200;
+
+export const STORAGE_MIN_MB = 100;
+export const STORAGE_MAX_MB = 1000;
+export const STORAGE_STEP_MB = 50;
+export const STORAGE_DEFAULT_MB = 100;
+
+export const REPLICAS_MIN = 1;
+export const REPLICAS_MAX = 3;
+export const REPLICAS_DEFAULT = 1;
+export const AUTOSCALING_MAX = 3;
+
+/**
+ * How a quantity is edited in the webview.
+ *
+ * - `slider` — value sits on a step inside the documented range
+ * - `custom` — keep the original (or user-typed) string; never clamp into range
+ * - `unset` — blank in the deployment config; applying leaves it blank
+ */
+export type QuantityControl =
+    | { mode: 'slider'; value: number }
+    | { mode: 'custom'; raw: string }
+    | { mode: 'unset' };
+
+export interface ResourceEditorState {
+    cpu: QuantityControl;
+    memory: QuantityControl;
+    storage: QuantityControl;
+    replicas: QuantityControl;
+    maxReplicas: QuantityControl;
+    staticIP: boolean;
+    /** Advanced: preserved across Apply even though the main UI hides them. */
+    serviceAccount: string;
+    requests: ResourceLimits;
+}
+
+export function editorFromConfig(config: ResourceConfig): ResourceEditorState {
+    return {
+        cpu: cpuControl(config.limits.cpu),
+        memory: sizeControl(config.limits.memory, MEMORY_MIN_MB, MEMORY_MAX_MB, MEMORY_STEP_MB),
+        storage: sizeControl(config.limits.storage, STORAGE_MIN_MB, STORAGE_MAX_MB, STORAGE_STEP_MB),
+        replicas: countControl(config.replicas, REPLICAS_MIN, REPLICAS_MAX),
+        maxReplicas: countControl(config.maxReplicas, REPLICAS_MIN, AUTOSCALING_MAX),
+        staticIP: config.staticIP,
+        serviceAccount: config.serviceAccount,
+        requests: { ...config.requests },
+    };
+}
+
+export function configFromEditor(editor: ResourceEditorState): ResourceConfig {
+    return {
+        replicas: quantityString(editor.replicas, (n) => String(n)),
+        maxReplicas: quantityString(editor.maxReplicas, (n) => String(n)),
+        staticIP: editor.staticIP,
+        serviceAccount: editor.serviceAccount,
+        limits: {
+            cpu: quantityString(editor.cpu, formatCpu),
+            memory: quantityString(editor.memory, formatSizePayload),
+            storage: quantityString(editor.storage, formatSizePayload),
+        },
+        requests: { ...editor.requests },
+    };
+}
+
+export function formatCpu(cpuM: number): string {
+    return `${cpuM}m`;
+}
+
+/** Display label: MiB below 1000, GiB when exactly divisible by 1000. */
+export function formatSizeDisplay(mb: number): string {
+    if (mb >= 1000 && mb % 1000 === 0) {
+        return `${mb / 1000} GiB`;
+    }
+    return `${mb} MiB`;
+}
+
+/** CLI/API payload quantity for a slider megabyte value (decimal `M`). */
+export function formatSizePayload(mb: number): string {
+    return `${mb}M`;
+}
+
+export function cpuControl(raw: string): QuantityControl {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+        return { mode: 'unset' };
+    }
+    const millicores = parseCpuMillicores(trimmed);
+    if (millicores === undefined) {
+        return { mode: 'custom', raw };
+    }
+    return inRangeSlider(millicores, CPU_MIN_M, CPU_MAX_M, CPU_STEP_M, raw);
+}
+
+export function sizeControl(
+    raw: string,
+    min: number,
+    max: number,
+    step: number,
+): QuantityControl {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+        return { mode: 'unset' };
+    }
+    const mb = parseSizeToMb(trimmed);
+    if (mb === undefined) {
+        return { mode: 'custom', raw };
+    }
+    return inRangeSlider(mb, min, max, step, raw);
+}
+
+export function countControl(raw: string, min: number, max: number): QuantityControl {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+        return { mode: 'unset' };
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isInteger(parsed)) {
+        return { mode: 'custom', raw };
+    }
+    if (parsed < min || parsed > max) {
+        return { mode: 'custom', raw };
+    }
+    return { mode: 'slider', value: parsed };
+}
+
+function quantityString(control: QuantityControl, format: (value: number) => string): string {
+    if (control.mode === 'unset') {
+        return '';
+    }
+    if (control.mode === 'custom') {
+        return control.raw;
+    }
+    return format(control.value);
+}
+
+function inRangeSlider(
+    value: number,
+    min: number,
+    max: number,
+    step: number,
+    raw: string,
+): QuantityControl {
+    if (!Number.isFinite(value)) {
+        return { mode: 'custom', raw };
+    }
+    const rounded = Math.round(value);
+    if (rounded < min || rounded > max) {
+        return { mode: 'custom', raw };
+    }
+    const snapped = snapToStep(rounded, min, step);
+    // Off-step values inside the range stay custom so Apply cannot rewrite them.
+    if (snapped !== rounded) {
+        return { mode: 'custom', raw };
+    }
+    return { mode: 'slider', value: snapped };
+}
+
+function snapToStep(value: number, min: number, step: number): number {
+    const steps = Math.round((value - min) / step);
+    return min + steps * step;
+}
+
+/** Millicores from a Kubernetes CPU quantity, or undefined when unparseable. */
+export function parseCpuMillicores(input: string): number | undefined {
+    const trimmed = input.trim();
+    if (!trimmed) {
+        return undefined;
+    }
+    if (trimmed.endsWith('m')) {
+        const millicores = Number.parseFloat(trimmed.slice(0, -1));
+        return Number.isFinite(millicores) ? millicores : undefined;
+    }
+    const cores = Number.parseFloat(trimmed);
+    return Number.isFinite(cores) ? cores * 1000 : undefined;
+}
+
+/**
+ * Megabytes (decimal) from a Kubernetes memory/storage quantity.
+ *
+ * Handles Ki/Mi/Gi/Ti (binary) and K/M/G/T (decimal). Returns undefined when
+ * the string is not a quantity we understand — callers keep it as custom.
+ */
+export function parseSizeToMb(input: string): number | undefined {
+    const trimmed = input.trim();
+    if (!trimmed) {
+        return undefined;
+    }
+    const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*([KMGTP]i?)?$/i);
+    if (!match) {
+        return undefined;
+    }
+    const value = Number.parseFloat(match[1]);
+    if (!Number.isFinite(value)) {
+        return undefined;
+    }
+    const suffix = match[2] ?? '';
+    const normalized = suffix.length === 2 ? suffix[0].toUpperCase() + 'i' : suffix.toUpperCase();
+    const binary: Record<string, number> = {
+        Ki: 1024 / 1_000_000,
+        Mi: (1024 * 1024) / 1_000_000,
+        Gi: 1024 ** 3 / 1_000_000,
+        Ti: 1024 ** 4 / 1_000_000,
+        Pi: 1024 ** 5 / 1_000_000,
+    };
+    const decimal: Record<string, number> = {
+        K: 1 / 1000,
+        M: 1,
+        G: 1000,
+        T: 1_000_000,
+        P: 1_000_000_000,
+    };
+    if (!normalized) {
+        return value / 1_000_000;
+    }
+    const multiplier = binary[normalized] ?? decimal[normalized];
+    if (multiplier === undefined) {
+        return undefined;
+    }
+    return value * multiplier;
+}

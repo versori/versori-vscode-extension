@@ -17,8 +17,10 @@ export interface BindingRow {
 /**
  * Organisation-wide notification channels.
  *
- * Field names come from `NotificationChannel` in versori-api.yaml: snake_case,
- * with the recipient nested at `config.email.to`.
+ * Prefer the CLI's printable JSON (`versori notifications channels list -o json`):
+ * `{ type: "printableChannel", items: [{ id, name, type, to }] }`. Also accept
+ * the raw API `NotificationChannel` shape (`config.email.to`) so a future
+ * printer change does not blank the QuickPick descriptions again.
  */
 export function toChannelRows(raw: unknown): ChannelRow[] {
     return unwrapRows(raw)
@@ -32,8 +34,22 @@ export function toChannelRows(raw: unknown): ChannelRow[] {
         .filter((row): row is ChannelRow => row !== undefined);
 }
 
-/** Project + environment bindings. `ProjectNotification` in versori-api.yaml. */
-export function toBindingRows(raw: unknown): BindingRow[] {
+/**
+ * Project + environment bindings.
+ *
+ * CLI printable rows (`notifications project list -o json`) carry
+ * `channelName` / `channelId` but **not** the recipient — that lives on the
+ * channel. Pass `channels` from `toChannelRows` so the panel can show the
+ * address; without it, email stays blank even though unlink still works.
+ */
+export function toBindingRows(raw: unknown, channels: ChannelRow[] = []): BindingRow[] {
+    const emailByChannelId = new Map(
+        channels.filter((channel) => channel.email).map((channel) => [channel.id, channel.email]),
+    );
+    const emailByChannelName = new Map(
+        channels.filter((channel) => channel.email).map((channel) => [channel.name, channel.email]),
+    );
+
     return unwrapRows(raw)
         .map((row) => {
             const id = text(row.id);
@@ -41,17 +57,34 @@ export function toBindingRows(raw: unknown): BindingRow[] {
                 return undefined;
             }
             const channelName = text(row.channelName);
+            const channelId = text(row.channelId) || text(row.channel_id);
             return {
                 id,
                 name: text(row.name) || channelName || id,
                 channelName,
-                email: emailOf(row),
+                email:
+                    emailOf(row) ||
+                    emailByChannelId.get(channelId) ||
+                    emailByChannelName.get(channelName) ||
+                    '',
             };
         })
         .filter((row): row is BindingRow => row !== undefined);
 }
 
+/**
+ * Recipient address from either CLI printable (`to`) or API nested config.
+ *
+ * The extension used to read only `config.email.to`. List commands print a
+ * flattened `printableChannel` / `printableProjectNotification`, so that path
+ * always returned `''` and the Issues panel looked like notifications were
+ * empty / unlinkable-by-eye.
+ */
 function emailOf(row: Row): string {
+    const flat = text(row.to);
+    if (flat) {
+        return flat;
+    }
     const config = row.config as { email?: { to?: unknown } } | undefined;
     return text(config?.email?.to);
 }

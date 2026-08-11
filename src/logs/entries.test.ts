@@ -137,6 +137,25 @@ describe('toLogEntries', () => {
         expect(toLogEntries(undefined)).toEqual([]);
     });
 
+    it('sorts newest first even though the CLI emits ascending time order', () => {
+        const entries = toLogEntries([
+            { ...record, timestamp: '2026-04-08T10:00:00Z', message: 'oldest' },
+            { ...record, timestamp: '2026-04-08T10:00:30Z', message: 'middle' },
+            { ...record, timestamp: '2026-04-08T10:01:00Z', message: 'newest' },
+        ]);
+
+        expect(entries.map((entry) => entry.message)).toEqual(['newest', 'middle', 'oldest']);
+    });
+
+    it('pushes entries with missing timestamps below dated ones', () => {
+        const entries = toLogEntries([
+            { severity: 'INFO', message: 'undated' },
+            { ...record, timestamp: '2026-04-08T10:00:00Z', message: 'dated' },
+        ]);
+
+        expect(entries.map((entry) => entry.message)).toEqual(['dated', 'undated']);
+    });
+
     it('redacts secrets nested inside arrays wherever they occur, so they never reach searchText either', () => {
         const [entry] = toLogEntries([
             {

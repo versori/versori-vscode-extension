@@ -261,12 +261,27 @@ async function loadBindings(entry: OpenPanel): Promise<void> {
         cwd: deps.state.projectDir,
         context: contextFor(deps.state),
     };
+    // Organisation-scoped; printable bindings omit the recipient, so we join
+    // against channels list to populate the address column in the panel.
+    const channelsSpec: CommandSpec = {
+        args: buildChannelListArgs(),
+        cwd: deps.state.projectDir,
+        context: contextFor(deps.state),
+    };
 
     try {
-        const raw = await runJson<unknown>(deps.bin, spec);
+        const [raw, channelsRaw] = await Promise.all([
+            runJson<unknown>(deps.bin, spec),
+            runJson<unknown>(deps.bin, channelsSpec).catch((err) => {
+                // Bindings still render without emails if the org list fails.
+                deps.output.appendLine(`$ ${displayCommand(channelsSpec)}`);
+                deps.output.appendLine(errorText(err));
+                return undefined;
+            }),
+        ]);
         await entry.panel.webview.postMessage({
             type: 'notifications',
-            bindings: toBindingRows(raw),
+            bindings: toBindingRows(raw, toChannelRows(channelsRaw)),
         });
     } catch (err) {
         const message = errorText(err);

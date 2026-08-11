@@ -69,6 +69,8 @@ const ELEMENT_IDS = [
     'body',
     'expandAll',
     'toggleRaw',
+    'setEntry',
+    'wipePrefix',
     'refresh',
     'prevPage',
     'nextPage',
@@ -670,11 +672,40 @@ describe('renderKvHtml', () => {
         expect(html).toMatch(/only the entries loaded on this page/i);
     });
 
-    it('offers no way to write, delete or wipe anything', () => {
+    it('offers set and wipe from the toolbar, and edit/delete per row', () => {
         const html = renderKvHtml('abc123').toLowerCase();
 
-        for (const word of ['kv set', 'delete', 'wipe', 'confirm']) {
-            expect(html).not.toContain(word);
-        }
+        expect(html).toContain('id="setentry"');
+        expect(html).toContain('id="wipeprefix"');
+        expect(html).toContain("type: 'set'");
+        expect(html).toContain("type: 'wipe'");
+        expect(html).toContain("actionbutton('edit', 'edit'");
+        expect(html).toContain("actionbutton('delete', 'delete'");
+    });
+
+    it('keeps values collapsed by default and only posts keys for mutations', () => {
+        const view = harness();
+        view.send(payload());
+
+        expect(view.rows()[0].open).toBe(false);
+        expect(view.rows()[0].headText).not.toContain(SECRET);
+
+        view.click('setEntry');
+        expect(view.posted.at(-1)).toMatchObject({ type: 'set' });
+
+        view.click('wipePrefix');
+        expect(view.posted.at(-1)).toMatchObject({ type: 'wipe' });
+
+        view.clickRow(1);
+        const entry = view.node('body').children[1];
+        const buttons = descendants(entry, []).filter((node) => node.tag === 'button');
+        const edit = buttons.find((node) => node.textContent === 'Edit');
+        const del = buttons.find((node) => node.textContent === 'Delete');
+        expect(edit).toBeTruthy();
+        expect(del).toBeTruthy();
+        edit!.fire('click');
+        expect(view.posted.at(-1)).toMatchObject({ type: 'edit', key: 'orders/cursor' });
+        del!.fire('click');
+        expect(view.posted.at(-1)).toMatchObject({ type: 'delete', key: 'orders/cursor' });
     });
 });

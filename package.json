@@ -18,6 +18,23 @@
     "onStartupFinished"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "versori",
+          "title": "Versori",
+          "icon": "media/versori.svg"
+        }
+      ]
+    },
+    "views": {
+      "versori": [
+        {
+          "id": "versori.menu",
+          "name": "Menu"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "versori.showMenu",

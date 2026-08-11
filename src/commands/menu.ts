@@ -1,18 +1,21 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
+import { showActivationsPanel } from '../activations/panel';
 import { CliError, run, runJson } from '../cli';
 import { parseContextList } from '../contexts';
 import { resolveEnvironmentNames } from '../environments';
 import { openDeployForm, openSaveVersionForm } from '../forms/panel';
 import { showIssuesPanel } from '../issues/panel';
 import { showKvPanel } from '../kv/panel';
+import { showKvStoresPanel } from '../kv/stores-panel';
 import { showLogPanel } from '../logs/panel';
 import { ResolvedState } from '../resolver/types';
 import { openResourcesForm } from '../resources/panel';
 import { ENVIRONMENT_ID, environmentArgs, environmentControl } from '../results/controls';
 import { showResults } from '../results/panel';
 import { openSyncForm } from '../sync/panel';
+import { showVariablesPanel } from '../variables/panel';
 import { POPUP_BACK, PopupSession } from '../forms/popup';
 import { projectArgs } from './target';
 
@@ -32,10 +35,9 @@ interface ActionItem extends vscode.QuickPickItem {
     run?: (deps: MenuDeps, popup: PopupSession) => Promise<'menu' | 'close'>;
 }
 
-const SEPARATOR: ActionItem = {
-    label: '',
-    kind: vscode.QuickPickItemKind.Separator,
-};
+function section(label: string): ActionItem {
+    return { label, kind: vscode.QuickPickItemKind.Separator };
+}
 
 export async function showMenu(deps: MenuDeps): Promise<void> {
     const popup = new PopupSession();
@@ -83,6 +85,7 @@ function buildItems(deps: MenuDeps): ActionItem[] {
 
     if (inProject) {
         items.push(
+            section('Project management'),
             {
                 label: '$(rocket) Deploy...',
                 description: 'dry run by default',
@@ -94,13 +97,28 @@ function buildItems(deps: MenuDeps): ActionItem[] {
                 run: (deps, popup) => openSaveVersionForm(deps, popup),
             },
             {
+                label: '$(cloud-download) Sync...',
+                description: 'pull remote files — dry run by default',
+                run: openSyncForm,
+            },
+            { label: '$(history) Versions', run: showVersions },
+            {
                 label: '$(dashboard) Resources...',
-                description: 'CPU, memory, replicas, static IP',
+                description: 'CPU/memory/storage sliders, scaling, static IP',
                 run: (deps, popup) => openResourcesForm(deps, popup),
             },
-            SEPARATOR,
-            { label: '$(output) Logs', run: showLogs },
-            { label: '$(warning) Issues', run: showIssues },
+            section('KV'),
+            {
+                label: '$(database) KV entries',
+                description: 'read, set, edit, delete, and wipe with confirmation',
+                run: showKvEntries,
+            },
+            {
+                label: '$(database) KV stores',
+                description: 'organisation-wide, grouped by project when possible',
+                run: showKvStores,
+            },
+            section('Connectors and connections'),
             { label: '$(plug) Connectors', run: showConnectors },
             {
                 label: '$(key) Static connections',
@@ -108,11 +126,24 @@ function buildItems(deps: MenuDeps): ActionItem[] {
                 run: showStaticConnections,
             },
             {
-                label: '$(database) KV entries',
-                description: 'read-only',
-                run: showKvEntries,
+                label: '$(plug) Connections',
+                description: 'organisation-wide',
+                run: showConnections,
             },
-            { label: '$(history) Versions', run: showVersions },
+            section('Users and variables'),
+            {
+                label: '$(organization) Activations',
+                description: 'users, activation connections, and runtime variables',
+                run: showActivations,
+            },
+            {
+                label: '$(symbol-variable) Variables',
+                description: 'project activation-variable schema',
+                run: showVariables,
+            },
+            section('Observe'),
+            { label: '$(output) Logs', run: showLogs },
+            { label: '$(warning) Issues', run: showIssues },
         );
     } else {
         items.push(
@@ -120,27 +151,28 @@ function buildItems(deps: MenuDeps): ActionItem[] {
                 label: '$(info) No synced project for this file',
                 detail: 'Open a file inside a directory containing a .versori to enable project actions.',
             },
-            SEPARATOR,
+            section('Project management'),
+            {
+                label: '$(cloud-download) Sync...',
+                description: 'pull remote files — dry run by default',
+                run: openSyncForm,
+            },
+            section('KV'),
+            {
+                label: '$(database) KV stores',
+                description: 'organisation-wide, grouped by project when possible',
+                run: showKvStores,
+            },
+            section('Connections'),
+            {
+                label: '$(plug) Connections',
+                description: 'organisation-wide',
+                run: showConnections,
+            },
         );
     }
 
-    items.push({
-        label: '$(cloud-download) Sync...',
-        description: 'pull remote files — dry run by default',
-        run: openSyncForm,
-    });
-    items.push(SEPARATOR);
-    items.push({
-        label: '$(plug) Connections',
-        description: 'organisation-wide',
-        run: showConnections,
-    });
-    items.push({
-        label: '$(database) KV stores',
-        description: 'organisation-wide',
-        run: showKvStores,
-    });
-    items.push(SEPARATOR);
+    items.push(section('Context'));
     items.push({
         label: '$(gear) Switch context...',
         description: deps.state.activeContextName ?? 'none active',
@@ -179,6 +211,26 @@ async function showIssues(deps: MenuDeps, popup: PopupSession): Promise<'menu' |
     }
 
     await showIssuesPanel(deps, environments);
+    return 'close';
+}
+
+async function showActivations(
+    deps: MenuDeps,
+    popup: PopupSession,
+): Promise<'menu' | 'close'> {
+    popup.close();
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
+        return 'menu';
+    }
+
+    await showActivationsPanel(deps, environments);
+    return 'close';
+}
+
+async function showVariables(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
+    await showVariablesPanel(deps);
     return 'close';
 }
 
@@ -241,11 +293,7 @@ async function showVersions(deps: MenuDeps, popup: PopupSession): Promise<'menu'
 }
 
 /**
- * KV entries for a scope. Read-only.
- *
- * `kv set` / `delete` / `wipe` are deliberately absent: they mutate live
- * workflow state and belong in the terminal, where their confirmation prompts
- * are. See README.md.
+ * KV entries for a scope, including host-confirmed mutations.
  */
 async function showKvEntries(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
     popup.close();
@@ -258,15 +306,10 @@ async function showKvEntries(deps: MenuDeps, popup: PopupSession): Promise<'menu
     return 'close';
 }
 
-/** KV stores in the organisation. Store ids feed the CLI's raw `--store` mode. */
+/** KV stores in the organisation, grouped by project name when possible. */
 async function showKvStores(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
     popup.close();
-    await showResults(deps, {
-        id: 'kvStores',
-        heading: () => 'KV stores',
-        baseArgs: ['kv', 'stores', 'list'],
-        preferred: ['name', 'id', 'createdAt'],
-    });
+    await showKvStoresPanel(deps);
     return 'close';
 }
 

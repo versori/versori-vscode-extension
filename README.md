@@ -1,6 +1,6 @@
 # Versori for VS Code
 
-A status bar indicator and command launcher for the `versori` CLI.
+A status bar indicator, Activity Bar launcher, and command launcher for the `versori` CLI.
 
 ## What it does
 
@@ -25,17 +25,21 @@ main ✓   ⚡ acme · shopify-sync
 The amber state is the point of the extension — it surfaces a context override that is
 otherwise easy to miss right before a deploy.
 
+The same menu is also available from the **Versori** icon in the left Activity Bar. The sidebar
+contains one launcher row and invokes the same `versori.showMenu` command as the status bar, so
+context resolution and safety gates cannot drift between the two entry points.
+
 ## Menu
 
-Click the status bar item. Entries appear in this order below. Most project-scoped entries only
-show when the file you are looking at is inside a synced project; **Sync...** is always available
-so it can bring a project into a directory. Organisation-wide entries always show.
+Click the status bar item or the Activity Bar launcher. The menu is grouped as **Project
+management**, **KV**, **Connectors and connections**, **Users and variables**, and **Observe**.
+Most project-scoped entries only show when the file you are looking at is inside a synced project;
+**Sync...** and organisation-wide entries remain available without one.
 
-**One extension popup for mutations** — **Deploy**, **Save version**, **Resources**, and **Sync**
-all stay inside the same extension QuickPick. Each action moves through screens in that popup:
-**Back** returns to the previous step, while **Escape** cancels the current step or backs out to
-the previous one. Text and textarea values are entered directly in popup input screens; no
-separate panel is opened for the mutation.
+**QuickPick mutations** — **Deploy**, **Save version**, and **Sync** stay inside the extension
+QuickPick. Each action moves through screens in that popup: **Back** returns to the previous step,
+while **Escape** cancels the current step or backs out to the previous one. Text and textarea values
+are entered directly in popup input screens.
 
 **Dry run by default** (project-scoped) — Deploy and Save version start with **Dry run** ticked,
 so the first click lists the files that would upload and changes nothing. They differ in what
@@ -49,10 +53,10 @@ happens after you untick it:
   that is explicitly *not* deployed, so it does not need Deploy's gate.
 
 **A mutation behind a confirmation** (project-scoped):
-- **Resources...** — choose an environment when needed, then view and edit CPU/memory/storage
-  requests and limits, replicas, the autoscaling maximum, static IP and service account in the
-  same popup. `projects edit` always ends at a **popup confirmation screen**; this gate cannot
-  be turned off with a setting.
+- **Resources...** — choose an environment when needed, then edit CPU, memory, storage, replicas,
+  autoscaling maximum, and static IP in a screenshot-inspired webview with literal sliders.
+  Service-account and request quantities remain under **Advanced**. **Apply** always opens a
+  modal confirmation before `projects edit` changes the live deployment config.
 
 **Sync...** (always available) — choose a project from `projects list`, then choose a workspace
 folder or select **Type another folder path**. A typed absolute or workspace-relative path is
@@ -64,9 +68,8 @@ Unticking it exposes a mandatory **popup confirmation screen** warning that live
 overwrite local changes and delete local files missing from the remote project; only accepting
 that warning sends `projects sync --confirm`. There is no “Don't ask again” option for Sync.
 
-**Read-only result panels remain separate** from the mutating QuickPick wizard. Their existing
-views still open outside the popup, and command output is also recorded in the "Versori" output
-channel:
+**Result and management panels remain separate** from the mutating QuickPick wizard. They open
+outside the popup, and command output is also recorded in the "Versori" output channel:
 
 | Entry | Scope | Command | Notes |
 |---|---|---|---|
@@ -74,10 +77,12 @@ channel:
 | **Issues** | Project | `projects issues list` | Plus close/update and email notification channels — see below |
 | **Connectors** | Project | `projects systems list` | "Connector" is the platform's name for a system; the CLI has no `connectors` command, so the argv stays `systems` |
 | **Static connections** | Project | `projects systems list-connections` | Connections bound to an environment |
-| **KV entries** | Project | `kv list` | Read-only browser — see below |
+| **KV entries** | Project | `kv list`, `kv set`, `kv delete`, `kv wipe` | Read, edit, and delete with confirmation — see below |
 | **Versions** | Project | `projects versions list` | |
+| **Activations** | Project | `projects activations ...`, `users create` | Users, activation connections, and activation variables |
+| **Variables** | Project | `projects variables ...` | DynamicVariablesSchema CRUD |
 | **Connections** | Organisation-wide | `connections list` | |
-| **KV stores** | Organisation-wide | `kv stores list` | |
+| **KV stores** | Organisation-wide | `kv stores list`, `projects list` | Grouped by project name when the join is available |
 
 Below that, always available: **Switch context...** and **Show output log**.
 
@@ -87,7 +92,9 @@ vocabulary; every panel still shows the real argv (`versori projects systems lis
 ### The log viewer
 
 Log records are heterogeneous key/value documents, so they are not rendered as a table. Each
-entry reads `timestamp · severity · message` as its headline, with every field one click away:
+entry reads `timestamp · severity · message` as its headline, with every field one click away.
+The CLI returns ascending time order; **the panel reverses that to newest-first** so the latest
+failure is at the top.
 
 - **Search (server-side)** is passed to `projects logs --search`, so it narrows what is fetched
 - **Include** and **Exclude** filter the fetched page client-side. The CLI has no exclude flag,
@@ -104,13 +111,14 @@ Filter by environment, status, severity and page size, then expand a row for ful
 every transition is reversible with another update. The same screen carries **email
 notification channels**: create an organisation-wide channel, link it to this project and
 environment with an optional label, severities and title/message filters, or unlink it (modal
-confirmed).
+confirmed). Channel / binding parsing follows the CLI's printable JSON (`to`, `channelId`),
+not the nested API schemas — binding rows are joined to channels so the recipient shows.
 
 ### KV entries
 
-Read-only browser over `kv list`, with friendly `--scope` targeting (organisation, workspace,
-project, end user, execution). Entries are **expandable**: a collapsed row shows the key and its
-`createdAt`; expanding it reveals the stored value, `expiresAt` (its TTL) and `versionstamp`.
+Browser over `kv list`, with friendly `--scope` targeting (organisation, workspace, project, end
+user, execution). Entries are **expandable**: a collapsed row shows the key and its `createdAt`;
+expanding it reveals the stored value, `expiresAt` (its TTL) and `versionstamp`.
 There is an **Expand all / Collapse all** toggle alongside the per-row twist.
 
 The search box filters **only the entries already loaded on this page** — `kv list` has no
@@ -119,15 +127,28 @@ or page through with real cursor-based **Next** / **Previous**, which drive the 
 `--after` / `--before` flags. An on-demand **Count all** button runs `kv count` only when
 clicked; because it is a separate call, its total can go stale relative to the page on screen.
 
+If a page response exceeds the platform's ~4 MiB gRPC limit **on first open**, the panel
+retries once with **page size 1** and updates the control to match. Refresh and paging do
+not auto-shrink — they surface the error so you can tighten the prefix or lower page size
+yourself. If `--limit 1` still fails, a single value is over the limit.
+
 Values are off-screen by default, and revealing one is a deliberate click. That is intentional:
 KV values can hold secrets, and this branch's redaction matches on key *names* — a KV entry's
 own field names are literally `key` and `value`, so there is nothing for it to catch there.
 
+**Set entry**, **Edit**, **Delete**, and **Wipe prefix** are available from the same panel. Every
+write is host-confirmed before the noninteractive CLI invocation: set/delete use `--yes`, while
+wipe runs the CLI dry-run first and only sends `--confirm` after the bulk target and count are
+shown. Empty keys and whole-scope wipes are refused by the extension.
+
+KV stores are grouped by project name when `kv stores list` prefixes can be joined to `projects
+list`. If the project list is unavailable, the panel falls back to the project ID, organisation,
+execution, or unknown-store label rather than hiding a store.
+
 Every generic results table also has a **Columns** picker, instead of a silent column cap.
 
-**Still deliberately excluded:** KV **mutations** — `kv set` / `delete` / `wipe`. The read-only KV
-browser above does not change that; those three stay in the terminal where their safety prompts
-live.
+Successful blank JSON output is treated as an empty result by the extension. Blank or whitespace
+responses render **No results** / **No entries**; non-blank malformed JSON still reports an error.
 
 ### A behaviour worth knowing if you also use the CLI directly
 
@@ -176,10 +197,11 @@ npm run watch
 Only the `vscode`-free modules are unit tested. The modules that import `vscode` are kept thin
 enough that their logic lives in the tested ones, so there are no mocked VS Code namespaces.
 
-That rule now covers 22 test files (`src/**/*.test.ts`), grouped by module: `src/cli.ts`,
+That rule now covers test files (`src/**/*.test.ts`), grouped by module: `src/cli.ts`,
 `src/contexts.ts`, `src/commands/target.ts`, `src/resolver/`, `src/forms/`, `src/issues/`,
-`src/kv/`, `src/logs/`, `src/resources/`, `src/results/` and `src/webview/`. This list will drift
-as the extension grows — `src/**/*.test.ts` is the source of truth, not this sentence.
+`src/activations/`, `src/kv/`, `src/logs/`, `src/resources/`, `src/variables/`, `src/results/`
+and `src/webview/`. This list will drift as the extension grows — `src/**/*.test.ts` is the source
+of truth, not this sentence.
 
 `src/resolver/local.test.ts` ports its cases from `pkg/cmd/config/config_test.go` in the CLI
 repo. That is deliberate: the resolver is a second implementation of precedence rules owned by
