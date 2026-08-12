@@ -24,10 +24,14 @@ export interface LogGroup {
  * can never disagree with the Include/Exclude/severity result — there is exactly
  * one implementation of "is this entry visible", in src/logs/filter.ts.
  *
- * Insertion order is the answer to "newest group first": `indices` arrives
- * ascending over a newest-first page, so the first time a message is seen is
- * also its newest occurrence. No sort, and therefore no chance of a sort
- * disagreeing with the row order underneath.
+ * Newest-group-first is not computed here — it is inherited. Callers must pass
+ * `indices` ascending over a newest-first `entries` page (the shape
+ * `toLogEntries` + `visibleIndices` already produce). Under that contract the
+ * first sighting of each message is its newest occurrence, so Map insertion
+ * order is newest-group-first and member `push` order is newest-first. No sort
+ * (a sort could disagree with the row order rendered underneath). An unsorted
+ * or oldest-first page silently yields wrong group order, wrong `latest`, and
+ * oldest-first `indices` — this module will not correct that.
  */
 export function groupByTitle(entries: LogEntry[], indices: number[]): LogGroup[] {
     const groups = new Map<string, LogGroup>();

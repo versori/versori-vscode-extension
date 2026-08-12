@@ -28,6 +28,19 @@ describe('groupByTitle', () => {
         expect(groups[0].message).toBe('fetch orders');
     });
 
+    it('orders groups by insertion (newest first), not by message alphabet', () => {
+        // Three titles so newest-first insertion matches neither A→Z nor Z→A:
+        // heartbeat (newest), zebra ping, fetch orders (oldest).
+        // A→Z would be fetch/heartbeat/zebra; Z→A zebra/heartbeat/fetch.
+        const local = toLogEntries([
+            { timestamp: '2026-04-08T10:00:01Z', severity: 'INFO', message: 'fetch orders' },
+            { timestamp: '2026-04-08T10:00:02Z', severity: 'INFO', message: 'zebra ping' },
+            { timestamp: '2026-04-08T10:00:03Z', severity: 'INFO', message: 'heartbeat' },
+        ]);
+        const groups = groupByTitle(local, visibleIndices(local, EMPTY_FILTER));
+        expect(groups.map((g) => g.message)).toEqual(['heartbeat', 'zebra ping', 'fetch orders']);
+    });
+
     it('reports the worst severity present, not the newest one', () => {
         const groups = groupByTitle(entries, visibleIndices(entries, EMPTY_FILTER));
 
