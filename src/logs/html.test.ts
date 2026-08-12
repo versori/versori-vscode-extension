@@ -396,6 +396,9 @@ describe('live and group controls (executed)', () => {
 
     it('unticks the box and explains itself when the host reports live mode unavailable', () => {
         const view = harness();
+        // Checkbox must start checked — otherwise expect(false) passes even when
+        // liveStatus() never syncs el('live').checked from the payload.
+        view.node('live').checked = true;
         const payload = payloadWith(['info']);
         payload.live = { enabled: false, disabledReason: 'Live logs needs a relative time range.' };
         view.sendLogs(payload);
@@ -406,18 +409,34 @@ describe('live and group controls (executed)', () => {
 
     it('reports a poll failure without replacing the entries', () => {
         const view = harness();
+        // Establish rows first — a single error-bearing payload cannot prove
+        // that a failed poll left previously rendered entries on screen.
+        // Two rows so a replace-with-one-placeholder bug cannot fake the count.
+        const first = payloadWith(['info']);
+        first.entries = [
+            first.entries[0]!,
+            { ...first.entries[0]!, id: 'bbbbbbbb#1', message: 'second line' },
+        ];
+        view.sendLogs(first);
+        const rowsBefore = view.node('body').children.length;
+        expect(rowsBefore).toBeGreaterThan(0);
+
         const payload = payloadWith(['info']);
+        payload.entries = first.entries;
         payload.live = { enabled: true, error: 'context deadline exceeded' };
         view.sendLogs(payload);
 
         expect(view.node('liveStatus').className).toContain('err');
         expect(view.node('body').children.length).toBeGreaterThan(0);
+        expect(view.node('body').children.length).toBe(rowsBefore);
     });
 
     it('has no Fields picker left to render', () => {
         const view = harness();
         view.sendLogs(payloadWith(['info']));
         expect(view.node('fieldPicker')).toBeUndefined();
+        // Harness ids alone cannot prove markup removal — pin the real HTML.
+        expect(renderLogsHtml('test-nonce')).not.toContain('id="fieldPicker"');
     });
 });
 
