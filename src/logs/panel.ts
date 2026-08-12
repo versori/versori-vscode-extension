@@ -18,7 +18,7 @@ import {
 } from '../results/controls';
 import { redact } from '../results/rows';
 import { handleNavMessage } from '../webview/nav';
-import { fieldKeys, LogEntry, severitiesOf, toLogEntries } from './entries';
+import { LogEntry, severitiesOf, toLogEntries } from './entries';
 import { EMPTY_FILTER, LogFilter, visibleIndices } from './filter';
 import { LogsPayload, renderLogsHtml } from './html';
 
@@ -139,9 +139,9 @@ async function load(entry: OpenPanel): Promise<void> {
         controls,
         controlValues: values,
         entries: [],
-        fieldKeys: [],
         severities: [],
         rawJson: '',
+        live: { enabled: false },
     };
 
     // Never send an invalid combination to the CLI — e.g. a custom range with no
@@ -168,7 +168,6 @@ async function load(entry: OpenPanel): Promise<void> {
         await post(entry, {
             ...base,
             entries,
-            fieldKeys: fieldKeys(entries),
             severities: severitiesOf(entries),
             // redact() runs for consistency with every other raw view on the
             // branch, but it is close to a **no-op on log data**: it matches

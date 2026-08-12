@@ -1,6 +1,8 @@
 import { Control, ControlValues } from '../results/controls';
 import { ENTRY_CSS, htmlDocument } from '../webview/shell';
 import { LogEntry } from './entries';
+import { LogGroup } from './groups';
+import { LiveStatus } from './live';
 
 export interface LogsPayload {
     heading: string;
@@ -11,12 +13,27 @@ export interface LogsPayload {
     /** Validation problem with the current control selection. */
     controlError?: string;
     entries: LogEntry[];
-    /** Every field key present, most-populated first. Drives the field picker. */
-    fieldKeys: string[];
     /** Distinct severities present, worst first. Drives the severity chips. */
     severities: string[];
     rawJson: string;
     error?: string;
+    live: LiveStatus;
+    /**
+     * True when this payload is a live merge rather than a replacement load. The
+     * webview keeps its scroll position and pending count across a merge, and
+     * resets them on a replacement.
+     */
+    merged?: boolean;
+    /** How many entries the merge prepended. Feeds the pending-new count. */
+    added?: number;
+}
+
+/** Host → webview: which rows survive the current filter (and optional groups). */
+export interface VisibleMessage {
+    type: 'visible';
+    indices: number[];
+    total: number;
+    groups?: LogGroup[];
 }
 
 /**
@@ -47,7 +64,7 @@ const LOGS_CSS = `
   }
   .filters .fld { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 200px; }
   .filters label { font-size: 0.8em; font-weight: 600; color: var(--vscode-descriptionForeground); }
-  .filters input[type="text"] {
+  .filters textarea {
     padding: 5px 8px;
     font: inherit;
     color: var(--vscode-input-foreground);
@@ -55,10 +72,23 @@ const LOGS_CSS = `
     border: 1px solid var(--vscode-input-border, transparent);
     border-radius: 2px;
   }
-  .filters input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .filters textarea:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .filters textarea { resize: vertical; font-family: var(--vscode-editor-font-family, monospace); }
   .sevs { display: flex; gap: 5px; flex-wrap: wrap; }
   .sevs button { padding: 2px 9px; border-radius: 9px; font-size: 0.85em; font-weight: 600; }
   .caseBox { display: flex; gap: 5px; align-items: center; font-size: 0.85em; }
+  .liveStatus { font-size: 0.85em; color: var(--vscode-descriptionForeground); }
+  .liveStatus.err { color: var(--vscode-errorForeground, #e03131); }
+  .status { min-height: 1.2em; font-size: 0.85em; color: var(--vscode-descriptionForeground); }
+  .backTop {
+    position: sticky;
+    bottom: 12px;
+    display: block;
+    margin: 10px auto 0;
+    color: var(--vscode-button-foreground);
+    background: var(--vscode-button-background);
+  }
+  .backTop.hidden { display: none; }
 `;
 
 const LOGS_BODY = `
@@ -70,27 +100,34 @@ const LOGS_BODY = `
 
   <div class="filters">
     <div class="fld">
-      <label for="include">Include (any of, comma-separated)</label>
-      <input type="text" id="include" placeholder="e.g. get-pricing, sync-orders">
+      <label for="include">Include (any of, one per line)</label>
+      <textarea id="include" rows="2"
+        placeholder='get-pricing &#10;message="Error fetching workflows"'></textarea>
     </div>
     <div class="fld">
-      <label for="exclude">Exclude (any of, comma-separated)</label>
-      <input type="text" id="exclude" placeholder="e.g. heartbeat, DurableInterpreter">
+      <label for="exclude">Exclude (any of, one per line)</label>
+      <textarea id="exclude" rows="2"
+        placeholder='heartbeat &#10;fields.name="default"'></textarea>
     </div>
   </div>
 
   <div class="toolbar">
     <div class="sevs" id="sevs"></div>
     <label class="caseBox"><input type="checkbox" id="caseSensitive"> Match case</label>
+    <label class="caseBox"><input type="checkbox" id="live"> Live logs</label>
+    <label class="caseBox"><input type="checkbox" id="group"> Group by title</label>
     <span class="count" id="count"></span>
-    <span id="fieldPicker"></span>
+    <span class="liveStatus" id="liveStatus"></span>
     <button id="expandAll">Expand all</button>
     <button id="collapseAll">Collapse all</button>
     <button id="toggleRaw">Raw JSON</button>
     <button id="refresh">Refresh</button>
   </div>
 
+  <div class="status" id="status" role="status" aria-live="polite"></div>
+
   <div id="body"></div>
+  <button type="button" id="backTop" class="backTop hidden"></button>
   <pre id="raw"></pre>
 `;
 
@@ -107,8 +144,9 @@ export const LOGS_SCRIPT = `
 
   let payload = null;
   let controlValues = {};
-  let inlineFields = [];
   let severities = [];
+  let liveOn = false;
+  let groupOn = false;
   let debounce = null;
 
   function currentFilter() {
@@ -126,7 +164,7 @@ export const LOGS_SCRIPT = `
   }
 
   function requestFilter() {
-    vscode.postMessage({ type: 'filter', filter: currentFilter() });
+    vscode.postMessage({ type: 'filter', filter: currentFilter(), group: groupOn });
   }
 
   function requestFilterSoon() {
@@ -147,9 +185,21 @@ export const LOGS_SCRIPT = `
     );
   }
 
-  function fields() {
-    renderFieldPicker(el('fieldPicker'), 'Fields', payload ? payload.fieldKeys : [],
-      inlineFields, (next) => { inlineFields = next; fields(); renderEntries(); });
+  function liveStatus() {
+    const live = payload.live || { enabled: false };
+    liveOn = Boolean(live.enabled);
+    el('live').checked = liveOn;
+
+    const text = live.error
+      ? 'Live · ' + live.error
+      : live.disabledReason
+        ? live.disabledReason
+        : liveOn
+          ? 'Live · updated ' + (live.updatedAt || 'now') + (live.warning ? ' · ' + live.warning : '')
+          : '';
+
+    el('liveStatus').textContent = text;
+    el('liveStatus').classList.toggle('err', Boolean(live.error));
   }
 
   // What this page contains, plus anything still selected that it does not.
@@ -236,20 +286,6 @@ export const LOGS_SCRIPT = `
       msg.textContent = entry.message;
       head.appendChild(msg);
 
-      if (inlineFields.length > 0) {
-        const inline = document.createElement('span');
-        inline.className = 'inline';
-        for (const key of inlineFields) {
-          const field = entry.fields.find((f) => f.key === key);
-          if (!field) { continue; }
-          const kv = document.createElement('span');
-          kv.className = 'kv';
-          kv.textContent = key.split('.').pop() + '=' + field.value;
-          inline.appendChild(kv);
-        }
-        head.appendChild(inline);
-      }
-
       head.addEventListener('click', () => {
         const open = row.classList.toggle('open');
         twist.textContent = open ? '\\u25be' : '\\u25b8';
@@ -311,7 +347,7 @@ export const LOGS_SCRIPT = `
     hideRawPane();
 
     controls();
-    fields();
+    liveStatus();
     sevChips();
     renderEntries();
   }
@@ -331,6 +367,18 @@ export const LOGS_SCRIPT = `
       row.classList.remove('open');
       row.querySelector('.twist').textContent = '\\u25b8';
     }
+  });
+  el('live').addEventListener('change', () => {
+    liveOn = el('live').checked;
+    // The host owns the timer: it has the panel's visibility, the in-flight flag
+    // and the last successful poll time, and it is the only side that can cancel
+    // a scheduled fetch when the panel closes.
+    vscode.postMessage({ type: 'live', enabled: liveOn });
+  });
+
+  el('group').addEventListener('change', () => {
+    groupOn = el('group').checked;
+    requestFilter();
   });
   wireRawPane();
 

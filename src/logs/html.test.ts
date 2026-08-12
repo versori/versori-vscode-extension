@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { RAW_PANE_SCRIPT } from '../webview/shell';
-import { LOGS_SCRIPT } from './html';
+import { LOGS_SCRIPT, renderLogsHtml } from './html';
 
 /**
  * Executes `LOGS_SCRIPT` against a stubbed DOM, driving it through its real
@@ -28,8 +28,8 @@ interface StubNode {
     };
     appendChild(child: StubNode): void;
     querySelector(selector: string): StubNode | undefined;
-    addEventListener(name: string, fn: () => void): void;
-    fire(name: string): void;
+    addEventListener(name: string, fn: (event?: unknown) => void): void;
+    fire(name: string, event?: unknown): void;
 }
 
 interface Chip {
@@ -45,15 +45,25 @@ interface TestPayload {
     controls: unknown[];
     controlValues: Record<string, unknown>;
     entries: Array<{
+        id: string;
         timestamp: string;
         rawTimestamp: string;
         severity: string;
         level?: string;
         message: string;
         fields: Array<{ key: string; value: string }>;
+        raw: Record<string, unknown>;
     }>;
-    fieldKeys: string[];
     severities: string[];
+    live: {
+        enabled: boolean;
+        updatedAt?: string;
+        error?: string;
+        warning?: string;
+        disabledReason?: string;
+    };
+    merged?: boolean;
+    added?: number;
     rawJson: string;
     error?: string;
 }
@@ -65,13 +75,17 @@ const ELEMENT_IDS = [
     'command',
     'raw',
     'controls',
-    'fieldPicker',
     'sevs',
     'count',
     'body',
     'include',
     'exclude',
     'caseSensitive',
+    'live',
+    'group',
+    'liveStatus',
+    'status',
+    'backTop',
     'refresh',
     'expandAll',
     'collapseAll',
@@ -79,7 +93,7 @@ const ELEMENT_IDS = [
 ];
 
 function makeNode(tag: string, all: StubNode[]): StubNode {
-    const listeners: Record<string, Array<() => void>> = {};
+    const listeners: Record<string, Array<(event?: unknown) => void>> = {};
     const classes = new Set<string>();
     let text = '';
 
@@ -133,10 +147,12 @@ function makeNode(tag: string, all: StubNode[]): StubNode {
             return self.children.find((child) => child.classList.contains(want));
         },
         addEventListener(name, fn) {
-            (listeners[name] ??= []).push(fn);
+            (listeners[name] ??= []).push(fn as (event?: unknown) => void);
         },
-        fire(name) {
-            (listeners[name] ?? []).forEach((fn) => fn());
+        fire(name, event) {
+            (listeners[name] ?? []).forEach((fn) =>
+                fn(event ?? { stopPropagation() {}, preventDefault() {} }),
+            );
         },
     };
 
@@ -176,7 +192,6 @@ function harness() {
         'window',
         'acquireVsCodeApi',
         'renderControls',
-        'renderFieldPicker',
         // `RAW_PANE_SCRIPT` is concatenated rather than stubbed, exactly as
         // `htmlDocument` assembles a real panel — the raw pane's per-payload
         // reset is the behaviour under test below.
@@ -187,7 +202,6 @@ function harness() {
         () => ({ postMessage: (m: Record<string, unknown>) => void posted.push(m) }),
         // The shared shell scripts are exercised by shell.test.ts; here they only
         // need to exist, so the script under test can call them.
-        () => {},
         () => {},
     );
 
@@ -230,16 +244,18 @@ function payloadWith(severities: string[]): TestPayload {
         controlValues: {},
         entries: [
             {
+                id: 'aaaaaaaa#0',
                 timestamp: '2026-08-06 10:00:00',
                 rawTimestamp: '2026-08-06T10:00:00Z',
                 severity: severities[0] ?? 'info',
                 level: 'info',
                 message: 'workflow started',
                 fields: [{ key: 'fields.triggerName', value: 'get-pricing' }],
+                raw: { message: 'workflow started' },
             },
         ],
-        fieldKeys: ['fields.triggerName'],
         severities,
+        live: { enabled: false },
         rawJson: '[]',
     };
 }
@@ -346,5 +362,75 @@ describe('the raw JSON pane (executed)', () => {
         view.click('toggleRaw');
 
         expect(view.node('raw').className).toContain('show');
+    });
+});
+
+describe('live and group controls (executed)', () => {
+    it('tells the host to start live mode when the checkbox is ticked', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.node('live').checked = true;
+        view.node('live').fire('change');
+
+        expect(view.posted.at(-1)).toEqual({ type: 'live', enabled: true });
+    });
+
+    it('re-requests the filter with the grouping flag when Group by title is ticked', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.node('group').checked = true;
+        view.node('group').fire('change');
+
+        expect(view.posted.at(-1)).toMatchObject({ type: 'filter', group: true });
+    });
+
+    it('shows the last update time while live', () => {
+        const view = harness();
+        const payload = payloadWith(['info']);
+        payload.live = { enabled: true, updatedAt: '10:31:02' };
+        view.sendLogs(payload);
+
+        expect(view.node('liveStatus').textContent).toContain('10:31:02');
+        expect(view.node('live').checked).toBe(true);
+    });
+
+    it('unticks the box and explains itself when the host reports live mode unavailable', () => {
+        const view = harness();
+        const payload = payloadWith(['info']);
+        payload.live = { enabled: false, disabledReason: 'Live logs needs a relative time range.' };
+        view.sendLogs(payload);
+
+        expect(view.node('live').checked).toBe(false);
+        expect(view.node('liveStatus').textContent).toContain('relative time range');
+    });
+
+    it('reports a poll failure without replacing the entries', () => {
+        const view = harness();
+        const payload = payloadWith(['info']);
+        payload.live = { enabled: true, error: 'context deadline exceeded' };
+        view.sendLogs(payload);
+
+        expect(view.node('liveStatus').className).toContain('err');
+        expect(view.node('body').children.length).toBeGreaterThan(0);
+    });
+
+    it('has no Fields picker left to render', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        expect(view.node('fieldPicker')).toBeUndefined();
+    });
+});
+
+/**
+ * The stub DOM cannot model the HTML value sanitization algorithm, so the one
+ * thing that guarantees a multi-line filter survives is the element type itself.
+ */
+describe('the filter boxes', () => {
+    it('are textareas, because a text input strips the newlines the action menus append', () => {
+        const html = renderLogsHtml('test-nonce');
+
+        expect(html).toContain('<textarea id="include"');
+        expect(html).toContain('<textarea id="exclude"');
+        expect(html).not.toContain('id="include" placeholder');
     });
 });
