@@ -54,6 +54,8 @@ describe('buildLogArgs', () => {
         expect(buildLogArgs({ range: '6h', limit: 200 })).toEqual([
             '--since',
             '6h',
+            '--order',
+            'desc',
             '--limit',
             '200',
         ]);
@@ -72,6 +74,8 @@ describe('buildLogArgs', () => {
             '2026-07-30T09:00:00',
             '--end',
             '2026-07-31T17:00:00',
+            '--order',
+            'desc',
             '--limit',
             '50',
         ]);
@@ -104,7 +108,29 @@ describe('buildLogArgs', () => {
     });
 
     it('defaults to the last hour and 200 rows', () => {
-        expect(buildLogArgs({})).toEqual(['--since', '1h', '--limit', '200']);
+        expect(buildLogArgs({})).toEqual(['--since', '1h', '--order', 'desc', '--limit', '200']);
+    });
+
+    it('defaults --order to desc so a truncated page keeps the newest rows', () => {
+        expect(buildLogArgs({ range: '1h', limit: 200 })).toEqual([
+            '--since',
+            '1h',
+            '--order',
+            'desc',
+            '--limit',
+            '200',
+        ]);
+    });
+
+    it('honours an explicit values.order', () => {
+        expect(buildLogArgs({ range: '1h', limit: 200, order: 'asc' })).toEqual([
+            '--since',
+            '1h',
+            '--order',
+            'asc',
+            '--limit',
+            '200',
+        ]);
     });
 });
 
@@ -200,6 +226,8 @@ describe('buildLogArgs search', () => {
         expect(buildLogArgs({ range: '1h', limit: 200, search: 'get-pricing' })).toEqual([
             '--since',
             '1h',
+            '--order',
+            'desc',
             '--limit',
             '200',
             '--search',
@@ -211,6 +239,8 @@ describe('buildLogArgs search', () => {
         expect(buildLogArgs({ range: '1h', limit: 200, search: '   ' })).toEqual([
             '--since',
             '1h',
+            '--order',
+            'desc',
             '--limit',
             '200',
         ]);

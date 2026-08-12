@@ -131,11 +131,31 @@ describe('pollValues', () => {
             '2026-08-12T10:00:00.000Z',
             '--end',
             '2026-08-12T10:00:10.000Z',
+            '--order',
+            'asc',
             '--limit',
             '200',
             '--search',
             'orders',
         ]);
+    });
+
+    it("pins --order asc even when the panel's own values say desc", () => {
+        const held = { ...values, order: 'desc' as const };
+        const next = pollValues(held, Date.parse('2026-08-12T10:00:00Z'), Date.parse('2026-08-12T10:00:10Z'));
+        expect(buildLogArgs(next)).toEqual([
+            '--start',
+            '2026-08-12T10:00:00.000Z',
+            '--end',
+            '2026-08-12T10:00:10.000Z',
+            '--order',
+            'asc',
+            '--limit',
+            '200',
+            '--search',
+            'orders',
+        ]);
+        expect(held.order).toBe('desc');
     });
 
     it("does not mutate the panel's own control values", () => {

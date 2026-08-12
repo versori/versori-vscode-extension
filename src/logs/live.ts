@@ -116,6 +116,11 @@ export function pollWindow(state: LiveState, nowMs: number): { fromMs: number; t
  * Reuses the existing custom-range path rather than adding a second argument
  * builder: `buildLogArgs` already emits `--start`/`--end` for `range: 'custom'`,
  * and `normaliseTime` passes an RFC3339 instant through untouched.
+ *
+ * Always pins `order: 'asc'`: the drain-forward cursor (`nextPollCursor`) takes
+ * the page's maximum timestamp as the next `fromMs`, which is only correct when
+ * a full page means "there is more, later". Under `desc` the first page is the
+ * newest, so advancing to its max would skip everything older.
  */
 export function pollValues(values: ControlValues, fromMs: number, toMs: number): ControlValues {
     return {
@@ -123,17 +128,20 @@ export function pollValues(values: ControlValues, fromMs: number, toMs: number):
         range: CUSTOM_RANGE,
         from: new Date(fromMs).toISOString(),
         to: new Date(toMs).toISOString(),
+        order: 'asc',
     };
 }
 
 /**
  * Inclusive start for the next ascending CLI page.
  *
- * A full page proves only that records through its newest timestamp were
- * consumed. Returning that boundary (rather than the poll start/"now") lets the
- * next page overlap safely; mergeEntries removes repeats. No finite timestamp
- * strictly after `fromMs` means the CLI cannot paginate this page without a
- * cursor, so the caller must stop rather than skip same-timestamp records.
+ * Assumes the page arrived in ascending time order (`order: 'asc'`). A full
+ * page proves only that records through its newest timestamp were consumed.
+ * Returning that boundary (rather than the poll start/"now") lets the next page
+ * overlap safely; mergeEntries removes repeats. No finite timestamp strictly
+ * after `fromMs` means the CLI cannot paginate this page without a cursor, so
+ * the caller must stop rather than skip same-timestamp records. Do not flip the
+ * poll path to `desc` without replacing this cursor strategy.
  */
 export function nextPollCursor(
     entries: Array<{ rawTimestamp: string }>,

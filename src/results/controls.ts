@@ -128,6 +128,11 @@ export function buildLogArgs(values: ControlValues): string[] {
         args.push('--since', range);
     }
 
+    // Default desc: the API returns one page capped by --limit, so ascending
+    // would surface the oldest rows of a busy window ("Last hour" looking stale).
+    const order = String(values.order ?? 'desc');
+    args.push('--order', order === 'asc' ? 'asc' : 'desc');
+
     const limit = Number(values.limit ?? 200);
     if (Number.isFinite(limit) && limit > 0) {
         args.push('--limit', String(Math.floor(limit)));
