@@ -556,6 +556,10 @@ export const LOGS_SCRIPT = `
     const body = el('body');
     body.textContent = '';
 
+    // Same unbounded-growth concern as openIds: only keep groups still present.
+    const liveGroups = new Set(groups.map((group) => group.message));
+    openGroups = new Set([...openGroups].filter((key) => liveGroups.has(key)));
+
     for (const group of groups) {
       const node = document.createElement('div');
       node.className = 'entry group';
@@ -564,8 +568,12 @@ export const LOGS_SCRIPT = `
       const head = document.createElement('div');
       head.className = 'head';
 
-      const twist = document.createElement('span');
+      // Plan/acceptance require keyboard-operable group expansion separate from
+      // the title action button — brief Step 5's span is deliberately overridden.
+      const twist = document.createElement('button');
+      twist.type = 'button';
       twist.className = 'twist';
+      twist.setAttribute('aria-label', 'Expand group');
       head.appendChild(twist);
 
       const sev = document.createElement('span');
@@ -595,15 +603,21 @@ export const LOGS_SCRIPT = `
       latest.textContent = group.latest;
       head.appendChild(latest);
 
-      const isOpen = openGroups.has(group.message);
-      if (isOpen) { node.classList.add('open'); }
-      twist.textContent = isOpen ? '\\u25be' : '\\u25b8';
+      function setGroupOpen(isOpen) {
+        node.classList.toggle('open', isOpen);
+        twist.textContent = isOpen ? '\\u25be' : '\\u25b8';
+        twist.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+        if (isOpen) { openGroups.add(group.message); } else { openGroups.delete(group.message); }
+      }
 
-      head.addEventListener('click', () => {
-        const nowOpen = node.classList.toggle('open');
-        twist.textContent = nowOpen ? '\\u25be' : '\\u25b8';
-        if (nowOpen) { openGroups.add(group.message); } else { openGroups.delete(group.message); }
+      setGroupOpen(openGroups.has(group.message));
+
+      twist.addEventListener('click', (event) => {
+        // The head's own handler would immediately toggle it back.
+        if (event && event.stopPropagation) { event.stopPropagation(); }
+        setGroupOpen(!node.classList.contains('open'));
       });
+      head.addEventListener('click', () => setGroupOpen(!node.classList.contains('open')));
       node.appendChild(head);
 
       const detail = document.createElement('div');
@@ -740,6 +754,12 @@ export const LOGS_SCRIPT = `
     controls();
     liveStatus();
     sevChips();
+
+    // Drop ids that left the payload so a long live session cannot retain every
+    // historically expanded key until the panel is disposed.
+    const liveIds = new Set((payload.entries || []).map((entry) => entry.id));
+    openIds = new Set([...openIds].filter((id) => liveIds.has(id)));
+
     renderEntries();
 
     if (payload.merged) {

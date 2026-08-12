@@ -332,6 +332,18 @@ function harness(options: { reducedMotion?: boolean } = {}) {
                         .textContent;
                 });
         },
+        groupRowTimestamps(message: string) {
+            const detail = groupNode(message).children.find((c) =>
+                c.classList.contains('detail'),
+            ) as StubNode;
+            return detail.children
+                .filter((c) => c.classList.contains('entry'))
+                .map((row) => {
+                    const head = row.children.find((c) => c.classList.contains('head')) as StubNode;
+                    return (head.children.find((c) => c.classList.contains('ts')) as StubNode)
+                        .textContent;
+                });
+        },
         sendLogs(payload: TestPayload) {
             if (!onMessage) {
                 throw new Error('the script never registered a message listener');
@@ -446,6 +458,36 @@ function twoEntryPayload(): TestPayload {
                 message: 'fetch orders',
                 fields: [{ key: 'fields.triggerName', value: 'get-pricing' }],
                 raw: { message: 'fetch orders' },
+            },
+        ],
+    };
+}
+
+/** Newest WARN + older ERROR so copying indices[0] severity cannot fake "worst". */
+function worstVsNewestPayload(): TestPayload {
+    const base = payloadWith(['warn', 'error']);
+    return {
+        ...base,
+        entries: [
+            {
+                id: 'bbbbbbbb#1',
+                timestamp: '2026-08-06 11:00:01',
+                rawTimestamp: '2026-08-06T11:00:01Z',
+                severity: 'WARN',
+                level: 'warn',
+                message: 'sync stock',
+                fields: [{ key: 'fields.triggerName', value: 'get-pricing' }],
+                raw: { message: 'sync stock' },
+            },
+            {
+                id: 'bbbbbbbb#0',
+                timestamp: '2026-08-06 11:00:00',
+                rawTimestamp: '2026-08-06T11:00:00Z',
+                severity: 'ERROR',
+                level: 'error',
+                message: 'sync stock',
+                fields: [{ key: 'fields.triggerName', value: 'get-pricing' }],
+                raw: { message: 'sync stock' },
             },
         ],
     };
@@ -967,6 +1009,31 @@ describe('live follow-scroll (executed)', () => {
         expect(view.node('backTop').className).toContain('hidden');
     });
 
+    it('follows again after Back to top, and clears pending on the next merge', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+        const first = payloadWith(['info']);
+        first.merged = true;
+        first.added = 2;
+        view.sendLogs(first);
+
+        view.click('backTop');
+        // Smooth scroll settles asynchronously in a real browser; re-evaluate
+        // atTop at the parked position the way a late scroll event would.
+        view.scrollDown(0);
+
+        const before = view.scrolls.length;
+        const second = payloadWith(['info']);
+        second.merged = true;
+        second.added = 1;
+        view.sendLogs(second);
+
+        expect(view.scrolls.slice(before).some((s) => s.top === 0)).toBe(true);
+        expect(view.node('backTop').className).toContain('hidden');
+        expect(view.node('backTop').textContent).toBe('');
+    });
+
     it('does not animate under prefers-reduced-motion', () => {
         const view = harness({ reducedMotion: true });
         view.sendLogs(payloadWith(['info']));
@@ -1058,6 +1125,29 @@ describe('grouped rendering (executed)', () => {
         ]);
     });
 
+    it('shows the group worst severity even when the newest member is milder', () => {
+        const view = harness();
+        view.sendLogs(worstVsNewestPayload());
+        view.receive({
+            type: 'visible',
+            indices: [0, 1],
+            total: 2,
+            groups: [
+                {
+                    message: 'sync stock',
+                    severity: 'ERROR',
+                    level: 'error',
+                    latest: '2026-08-06 11:00:01',
+                    indices: [0, 1],
+                },
+            ],
+        });
+
+        expect(view.groupHeads()).toEqual([
+            { message: 'sync stock', severity: 'ERROR', count: '2', latest: '2026-08-06 11:00:01' },
+        ]);
+    });
+
     it('reveals its instances newest-first when a group is expanded', () => {
         const view = harness();
         view.sendLogs(twoEntryPayload());
@@ -1065,6 +1155,11 @@ describe('grouped rendering (executed)', () => {
         view.expandGroup('fetch orders');
 
         expect(view.groupRowMessages('fetch orders')).toEqual(['fetch orders', 'fetch orders']);
+        // Timestamps differ; a reverse-index render still matches identical messages.
+        expect(view.groupRowTimestamps('fetch orders')).toEqual([
+            '2026-08-06 10:00:01',
+            '2026-08-06 10:00:00',
+        ]);
     });
 
     it('keeps each instance independently expandable with its own field actions', () => {
