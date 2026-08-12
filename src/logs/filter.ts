@@ -142,10 +142,9 @@ export function parseFilterText(text: string): Expression[] {
 /**
  * Whether an entry survives the filter.
  *
- * Exclude is applied after include, so narrowing to a trigger and still dropping
- * its noisy heartbeat works. Matching runs over `searchText` — headline,
- * severity and every field value — so a term can name a field value the user
- * has not chosen to display.
+ * Order is severity, then include, then exclude — exclude last so narrowing to a
+ * trigger and still dropping its noisy heartbeat works. Includes are
+ * alternatives, which is what lets two exact titles be watched side by side.
  */
 export function matchesEntry(entry: LogEntry, filter: LogFilter): boolean {
     if (
@@ -155,15 +154,58 @@ export function matchesEntry(entry: LogEntry, filter: LogFilter): boolean {
         return false;
     }
 
-    const haystack = filter.caseSensitive ? entry.searchText : entry.searchText.toLowerCase();
-    const fold = (term: string) => (filter.caseSensitive ? term : term.toLowerCase());
-
-    const include = splitExpressions(filter.include);
-    if (include.length > 0 && !include.some((term) => haystack.includes(fold(term)))) {
+    const include = parseFilterText(filter.include);
+    if (
+        include.length > 0 &&
+        !include.some((expression) => matchesExpression(entry, expression, filter.caseSensitive))
+    ) {
         return false;
     }
 
-    return !splitExpressions(filter.exclude).some((term) => haystack.includes(fold(term)));
+    return !parseFilterText(filter.exclude).some((expression) =>
+        matchesExpression(entry, expression, filter.caseSensitive),
+    );
+}
+
+/**
+ * One clause against one entry.
+ *
+ * Field **paths** are always compared exactly — they are the flattened paths the
+ * panel itself emitted into the menu, not something the user typed from memory,
+ * so folding their case would only create false matches. Match case applies to
+ * the textual values on both sides.
+ */
+function matchesExpression(entry: LogEntry, expression: Expression, caseSensitive: boolean): boolean {
+    const fold = (text: string) => (caseSensitive ? text : text.toLowerCase());
+
+    switch (expression.kind) {
+        case 'text':
+            return fold(entry.searchText).includes(fold(expression.value));
+
+        case 'message':
+            return expression.prefix
+                ? fold(entry.message).startsWith(fold(expression.value))
+                : fold(entry.message) === fold(expression.value);
+
+        case 'field':
+            return entry.fields.some(
+                (field) =>
+                    field.key === expression.path &&
+                    (expression.prefix
+                        ? fold(field.value).startsWith(fold(expression.value))
+                        : fold(field.value) === fold(expression.value)),
+            );
+
+        case 'fieldPrefix':
+            // `fields.error.*` also matches a terminal field named exactly
+            // `fields.error` — an `error` that arrived as a string rather than an
+            // object is the same thing the user is asking about.
+            return entry.fields.some(
+                (field) =>
+                    field.key === expression.path ||
+                    field.key.startsWith(`${expression.path}.`),
+            );
+    }
 }
 
 /**

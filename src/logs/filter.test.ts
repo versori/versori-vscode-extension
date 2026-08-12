@@ -253,6 +253,101 @@ describe('matchesEntry', () => {
     });
 });
 
+describe('matchesEntry with scoped expressions', () => {
+    it('matches an exact message and rejects a mere substring of it', () => {
+        expect(matchesEntry(heartbeat, { ...EMPTY_FILTER, include: 'message="heartbeat"' })).toBe(
+            true,
+        );
+        expect(matchesEntry(heartbeat, { ...EMPTY_FILTER, include: 'message="heart"' })).toBe(false);
+    });
+
+    it('matches a message prefix', () => {
+        const filter = { ...EMPTY_FILTER, include: 'message^="connect"' };
+        expect(matchesEntry(refused, filter)).toBe(true);
+        expect(matchesEntry(heartbeat, filter)).toBe(false);
+    });
+
+    it('matches an exact field value at a path, not the same text at another path', () => {
+        const filter = { ...EMPTY_FILTER, include: 'fields.triggerName="get-pricing"' };
+        expect(matchesEntry(completed, filter)).toBe(true);
+        expect(matchesEntry(refused, filter)).toBe(false);
+        expect(matchesEntry(completed, { ...EMPTY_FILTER, include: 'fields.name="get-pricing"' })).toBe(
+            false,
+        );
+    });
+
+    it('matches a field value prefix', () => {
+        const filter = { ...EMPTY_FILTER, include: 'fields.triggerName^="get-"' };
+        expect(matchesEntry(completed, filter)).toBe(true);
+        expect(matchesEntry(refused, filter)).toBe(false);
+    });
+
+    it('matches an entry that has any field under a path prefix', () => {
+        const filter = { ...EMPTY_FILTER, include: 'fields.*' };
+        expect(matchesEntry(completed, filter)).toBe(true);
+        expect(matchesEntry(toLogEntries([{ message: 'bare' }])[0], filter)).toBe(false);
+    });
+
+    it('treats a terminal field named exactly like the prefix as being under it', () => {
+        const stringError = toLogEntries([
+            { timestamp: '2026-04-08T10:00:56Z', severity: 'ERROR', message: 'm', fields: { error: 'boom' } },
+        ])[0];
+        expect(matchesEntry(stringError, { ...EMPTY_FILTER, include: 'fields.error.*' })).toBe(true);
+    });
+
+    it('finds a field name through generic text, so a value need not be known', () => {
+        expect(matchesEntry(completed, { ...EMPTY_FILTER, include: 'triggerName' })).toBe(true);
+    });
+
+    it('treats two exact-title includes as alternatives, so both sets of logs show', () => {
+        const filter = {
+            ...EMPTY_FILTER,
+            include: 'message="heartbeat"\nmessage="connect ECONNREFUSED"',
+        };
+        expect(matchesEntry(heartbeat, filter)).toBe(true);
+        expect(matchesEntry(refused, filter)).toBe(true);
+        expect(matchesEntry(completed, filter)).toBe(false);
+    });
+
+    it('lets a scoped exclude win over a matching include', () => {
+        const filter = {
+            ...EMPTY_FILTER,
+            include: 'fields.triggerName="get-pricing"',
+            exclude: 'message="heartbeat"',
+        };
+        expect(matchesEntry(completed, filter)).toBe(true);
+        expect(matchesEntry(heartbeat, filter)).toBe(false);
+    });
+
+    it('applies Match case to scoped values as well as plain text', () => {
+        expect(matchesEntry(heartbeat, { ...EMPTY_FILTER, include: 'message="HEARTBEAT"' })).toBe(
+            true,
+        );
+        expect(
+            matchesEntry(heartbeat, {
+                ...EMPTY_FILTER,
+                include: 'message="HEARTBEAT"',
+                caseSensitive: true,
+            }),
+        ).toBe(false);
+    });
+
+    it('composes severity with expressions as a further narrowing', () => {
+        const filter = { ...EMPTY_FILTER, include: 'fields.*', severities: ['ERROR'] };
+        expect(matchesEntry(refused, filter)).toBe(true);
+        expect(matchesEntry(completed, filter)).toBe(false);
+    });
+
+    it('keeps every entry when a malformed expression is the only include', () => {
+        // Half-typed: falls back to a substring that matches nothing rather than
+        // hiding everything with an unparseable clause.
+        expect(matchesEntry(heartbeat, { ...EMPTY_FILTER, include: 'message=' })).toBe(false);
+        expect(matchesEntry(heartbeat, { ...EMPTY_FILTER, include: 'heartbeat, message=' })).toBe(
+            true,
+        );
+    });
+});
+
 describe('visibleIndices', () => {
     it('returns positions in the original list, so the webview can show and hide rows', () => {
         // Newest-first: refused (0), heartbeat (1), completed (2) — exclude heartbeat → [0, 2].
