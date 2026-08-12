@@ -265,6 +265,12 @@ describe('matchesEntry with scoped expressions', () => {
         const filter = { ...EMPTY_FILTER, include: 'message^="connect"' };
         expect(matchesEntry(refused, filter)).toBe(true);
         expect(matchesEntry(heartbeat, filter)).toBe(false);
+        // Needle mid-message / only as a suffix must not match — `includes`,
+        // `indexOf(...) >= 0`, and `endsWith` would all accept these wrongly.
+        const midConnect = toLogEntries([{ message: 'failed to connect' }])[0];
+        const suffixConnect = toLogEntries([{ message: 'will reconnect' }])[0];
+        expect(matchesEntry(midConnect, filter)).toBe(false);
+        expect(matchesEntry(suffixConnect, filter)).toBe(false);
     });
 
     it('matches an exact field value at a path, not the same text at another path', () => {
@@ -280,6 +286,16 @@ describe('matchesEntry with scoped expressions', () => {
         const filter = { ...EMPTY_FILTER, include: 'fields.triggerName^="get-"' };
         expect(matchesEntry(completed, filter)).toBe(true);
         expect(matchesEntry(refused, filter)).toBe(false);
+        // Same start-only invariant on field values — mid and suffix fixtures
+        // catch `includes` / `indexOf` / `endsWith` stand-ins for `^=`.
+        const midGet = toLogEntries([
+            { message: 'm', fields: { triggerName: 'widget-get-pricing' } },
+        ])[0];
+        const suffixGet = toLogEntries([
+            { message: 'm', fields: { triggerName: 'legacy-get-' } },
+        ])[0];
+        expect(matchesEntry(midGet, filter)).toBe(false);
+        expect(matchesEntry(suffixGet, filter)).toBe(false);
     });
 
     it('matches an entry that has any field under a path prefix', () => {
