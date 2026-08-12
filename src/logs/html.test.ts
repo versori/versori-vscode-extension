@@ -7,7 +7,31 @@ import {
     fieldPrefixExpression,
     messageExpression,
 } from './filter';
-import { LOGS_SCRIPT, renderLogsHtml } from './html';
+import { toLogEntries } from './entries';
+import { LOGS_SCRIPT, renderLogsHtml, toWebviewEntries } from './html';
+
+describe('host-to-webview entry boundary', () => {
+    it('does not post the host-private digest or the secret value it contains', () => {
+        const secret = 'sk-live-boundary-secret';
+        const hostEntries = toLogEntries([
+            {
+                timestamp: '2026-08-12T20:00:00Z',
+                severity: 'INFO',
+                message: 'credential-shaped source record',
+                token: secret,
+            },
+        ]);
+
+        // This proves the source fixture exercises the leak: the exact
+        // occurrence identity intentionally contains the untouched secret.
+        expect(hostEntries[0].digest).toContain(secret);
+
+        const postedEntries = toWebviewEntries(hostEntries);
+        expect(postedEntries[0]).not.toHaveProperty('digest');
+        expect(JSON.stringify(postedEntries)).not.toContain(secret);
+        expect(postedEntries[0].raw.token).toBe('[redacted]');
+    });
+});
 
 /**
  * Executes `LOGS_SCRIPT` against a stubbed DOM, driving it through its real

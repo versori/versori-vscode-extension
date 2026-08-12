@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { buildLogArgs, CUSTOM_RANGE } from '../results/controls';
 import {
+    DEFAULT_LOG_LIMIT,
     liveUnavailableReason,
+    MAX_LOG_LIMIT,
+    nextPollCursor,
+    normaliseLogLimit,
+    normaliseLogValues,
     POLL_INTERVAL_MS,
     POLL_OVERLAP_MS,
     pollValues,
@@ -28,6 +33,27 @@ describe('liveUnavailableReason', () => {
     it('refuses a custom absolute range, because that window does not advance', () => {
         const reason = liveUnavailableReason({ ...values, range: CUSTOM_RANGE });
         expect(reason).toMatch(/relative/i);
+    });
+});
+
+describe('normaliseLogLimit', () => {
+    it('restores blank, zero, negative and non-numeric values to a positive default', () => {
+        expect(normaliseLogLimit('')).toBe(DEFAULT_LOG_LIMIT);
+        expect(normaliseLogLimit(0)).toBe(DEFAULT_LOG_LIMIT);
+        expect(normaliseLogLimit(-1)).toBe(DEFAULT_LOG_LIMIT);
+        expect(normaliseLogLimit('not-a-number')).toBe(DEFAULT_LOG_LIMIT);
+    });
+
+    it('floors fractions and enforces a hard upper bound', () => {
+        expect(normaliseLogLimit(12.9)).toBe(12);
+        expect(normaliseLogLimit(0.5)).toBe(1);
+        expect(normaliseLogLimit(MAX_LOG_LIMIT + 1)).toBe(MAX_LOG_LIMIT);
+    });
+
+    it('returns a new control object with the normalised value', () => {
+        const original = { ...values, limit: '' };
+        expect(normaliseLogValues(original)).toEqual({ ...values, limit: DEFAULT_LOG_LIMIT });
+        expect(original.limit).toBe('');
     });
 });
 
@@ -79,6 +105,20 @@ describe('pollWindow', () => {
             toMs: 1_010_000,
         });
     });
+
+    it('resumes an incomplete full-page catch-up at its proven boundary without rewinding', () => {
+        const state = {
+            enabled: true,
+            visible: true,
+            inFlight: false,
+            lastPollMs: 1_000_000,
+            catchUpFromMs: 1_005_000,
+        };
+        expect(pollWindow(state, 1_010_000)).toEqual({
+            fromMs: 1_005_000,
+            toMs: 1_010_000,
+        });
+    });
 });
 
 describe('pollValues', () => {
@@ -115,5 +155,33 @@ describe('truncationWarning', () => {
 
     it('says nothing when the response was not full', () => {
         expect(truncationWarning(12, 200)).toBeUndefined();
+    });
+});
+
+describe('nextPollCursor', () => {
+    it('advances only to the newest timestamp actually consumed from a full page', () => {
+        const fromMs = Date.parse('2026-08-12T10:00:00Z');
+        expect(
+            nextPollCursor(
+                [
+                    { rawTimestamp: '2026-08-12T10:00:04Z' },
+                    { rawTimestamp: '2026-08-12T10:00:02Z' },
+                ],
+                fromMs,
+            ),
+        ).toBe(Date.parse('2026-08-12T10:00:04Z'));
+    });
+
+    it('refuses to skip a full page whose timestamps cannot prove forward progress', () => {
+        const fromMs = Date.parse('2026-08-12T10:00:00Z');
+        expect(
+            nextPollCursor(
+                [
+                    { rawTimestamp: '2026-08-12T10:00:00Z' },
+                    { rawTimestamp: 'not-a-time' },
+                ],
+                fromMs,
+            ),
+        ).toBeUndefined();
     });
 });

@@ -21,11 +21,15 @@ import { handleNavMessage } from '../webview/nav';
 import { LogEntry, severitiesOf, toLogEntries } from './entries';
 import { EMPTY_FILTER, LogFilter, visibleIndices } from './filter';
 import { groupByTitle } from './groups';
-import { LogsPayload, renderLogsHtml } from './html';
+import { LogsPayload, renderLogsHtml, toWebviewEntries } from './html';
 import {
     LiveState,
     LiveStatus,
     liveUnavailableReason,
+    MAX_POLL_PAGES,
+    nextPollCursor,
+    normaliseLogLimit,
+    normaliseLogValues,
     POLL_INTERVAL_MS,
     pollValues,
     pollWindow,
@@ -34,6 +38,7 @@ import {
     truncationWarning,
 } from './live';
 import { mergeEntries } from './merge';
+import { RequestGate, RequestToken } from './requests';
 
 export interface LogsDeps {
     bin: string;
@@ -67,6 +72,8 @@ interface OpenPanel {
     live: LiveState;
     liveStatus: LiveStatus;
     timer?: ReturnType<typeof setInterval>;
+    /** Generation gate and abort ownership for every load/poll child process. */
+    requests: RequestGate;
     /**
      * Redacted JSON of the last full load, for the Raw JSON pane. A live merge
      * has no untouched response of its own to show, and re-sending '' would empty
@@ -82,7 +89,9 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
     const controls = [environmentControl(environments), ...logControls(), searchControl()];
 
     if (open) {
-        open.panel.reveal();
+        // Invalidate before mutating the target. Even if abort races with child
+        // completion, the old continuation can no longer commit to this record.
+        invalidateRequests(open);
         // Retarget before loading: the panel may have been opened from another
         // project, and the message handler reads these on every Refresh.
         open.deps = deps;
@@ -90,17 +99,19 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
         // ...and reconcile the held values against the new controls, or an
         // environment from the previous project would be queried while the
         // select displays this one's.
-        open.values = retargetValues(controls, open.values);
+        open.values = normaliseLogValues(retargetValues(controls, open.values));
         // A different project's page: the retained entries, its raw JSON and the
         // poll baseline all belong to the old target.
         open.entries = [];
         open.rawJson = '';
         open.live.lastPollMs = undefined;
+        open.live.catchUpFromMs = undefined;
         if (open.live.enabled && liveUnavailableReason(open.values)) {
             open.live.enabled = false;
             open.liveStatus = { enabled: false, disabledReason: liveUnavailableReason(open.values) };
         }
         syncTimer(open);
+        open.panel.reveal();
         await load(open);
         return;
     }
@@ -114,12 +125,13 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
 
     const entry: OpenPanel = {
         panel,
-        values: defaultValues(controls),
+        values: normaliseLogValues(defaultValues(controls)),
         entries: [],
         deps,
         controls,
         live: { enabled: false, visible: true, inFlight: false },
         liveStatus: { enabled: false },
+        requests: new RequestGate(),
         rawJson: '',
     };
     open = entry;
@@ -131,7 +143,12 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
             clearInterval(entry.timer);
             entry.timer = undefined;
         }
-        open = undefined;
+        entry.live.enabled = false;
+        entry.live.inFlight = false;
+        entry.requests.dispose();
+        if (open === entry) {
+            open = undefined;
+        }
     });
 
     panel.onDidChangeViewState(() => {
@@ -165,7 +182,7 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
             }
             if (message?.type === 'refresh') {
                 if (message.controls) {
-                    entry.values = { ...entry.values, ...message.controls };
+                    entry.values = normaliseLogValues({ ...entry.values, ...message.controls });
                 }
                 // A control change can invalidate live mode — switching to a
                 // custom range is the case the design calls out.
@@ -202,6 +219,33 @@ function defaultValues(controls: Control[]): ControlValues {
     return Object.fromEntries(controls.map((control) => [control.id, control.value]));
 }
 
+function requestTarget(entry: OpenPanel): string {
+    const { state } = entry.deps;
+    return JSON.stringify([
+        entry.deps.bin,
+        state.projectDir,
+        state.projectId,
+        state.contextName,
+        entry.values.environment,
+        entry.values.range,
+        entry.values.from,
+        entry.values.to,
+        entry.values.limit,
+        entry.values.search,
+    ]);
+}
+
+function isCurrent(entry: OpenPanel, request: RequestToken): boolean {
+    return entry.requests.isCurrent(request, requestTarget(entry), entry.live.enabled);
+}
+
+function invalidateRequests(entry: OpenPanel): void {
+    entry.requests.invalidate();
+    // A stale poll's finally block is generation-gated, so it cannot clear a
+    // newer poll. Reset here because every active request has just been aborted.
+    entry.live.inFlight = false;
+}
+
 function syncTimer(entry: OpenPanel): void {
     const wanted = timerShouldRun(entry.live);
 
@@ -220,6 +264,10 @@ async function setLive(entry: OpenPanel, enabled: boolean): Promise<void> {
 
     entry.live.enabled = enabled && !reason;
     entry.liveStatus = { enabled: entry.live.enabled, disabledReason: reason };
+    if (!entry.live.enabled) {
+        invalidateRequests(entry);
+        entry.live.catchUpFromMs = undefined;
+    }
     syncTimer(entry);
 
     if (entry.live.enabled) {
@@ -238,7 +286,7 @@ async function setLive(entry: OpenPanel, enabled: boolean): Promise<void> {
  * same values with an absolute window substituted (src/logs/live.ts) — one
  * builder means a poll can never drift from a load in target or flags.
  */
-function specFor(entry: OpenPanel, values: ControlValues): CommandSpec {
+function specFor(entry: OpenPanel, values: ControlValues, signal?: AbortSignal): CommandSpec {
     const { deps } = entry;
 
     return {
@@ -251,6 +299,7 @@ function specFor(entry: OpenPanel, values: ControlValues): CommandSpec {
         ],
         cwd: deps.state.projectDir,
         context: contextFor(deps.state),
+        signal,
     };
 }
 
@@ -267,7 +316,7 @@ function basePayload(entry: OpenPanel): LogsPayload {
         command: displayCommand(specFor(entry, values)),
         controls,
         controlValues: values,
-        entries: entry.entries,
+        entries: toWebviewEntries(entry.entries),
         severities: severitiesOf(entry.entries),
         // Held on the record rather than rebuilt: only load() has an untouched
         // response to redact, and sending '' here would empty the Raw JSON pane
@@ -285,18 +334,31 @@ function postStatusOnly(entry: OpenPanel): Thenable<boolean> {
 }
 
 async function load(entry: OpenPanel): Promise<void> {
-    const { deps, values } = entry;
-    const spec = specFor(entry, values);
+    // A replacement load owns a new control generation. Older loads and polls
+    // are cancelled and, independently, barred from committing if abort races.
+    invalidateRequests(entry);
+    const request = entry.requests.begin(requestTarget(entry), false);
+    const startedMs = Date.now();
+    const deps = entry.deps;
+    const values = { ...entry.values };
+    const spec = specFor(entry, values, request.signal);
     const command = displayCommand(spec);
     const heading = `Logs · ${values.environment} · ${describeRange(values)}`;
+
+    entry.live.inFlight = true;
 
     // Never send an invalid combination to the CLI — e.g. a custom range with no
     // start, which would silently widen the query.
     const controlError = validateLogRange(values);
     if (controlError) {
-        entry.entries = [];
-        entry.rawJson = '';
-        await post(entry, { ...basePayload(entry), controlError, error: controlError });
+        if (isCurrent(entry, request)) {
+            entry.entries = [];
+            entry.rawJson = '';
+            await post(entry, { ...basePayload(entry), controlError, error: controlError });
+        }
+        if (entry.requests.finish(request)) {
+            entry.live.inFlight = false;
+        }
         return;
     }
 
@@ -305,12 +367,18 @@ async function load(entry: OpenPanel): Promise<void> {
             { location: vscode.ProgressLocation.Window, title: `Versori: ${heading}` },
             () => runJson<unknown>(deps.bin, spec),
         );
+        if (!isCurrent(entry, request)) {
+            return;
+        }
 
         const entries = toLogEntries(raw);
         entry.entries = entries;
         // A replacement load is the new comparison baseline: a poll that reached
         // back before it would re-add everything this page already shows.
-        entry.live.lastPollMs = Date.now();
+        // Capture before starting the CLI so logs written while it runs are
+        // included by the next overlapped poll rather than falling in a gap.
+        entry.live.lastPollMs = startedMs;
+        entry.live.catchUpFromMs = undefined;
         entry.liveStatus = { ...entry.liveStatus, error: undefined, warning: undefined };
         // redact() runs for consistency with every other raw view on the
         // branch, but it is close to a **no-op on log data**: it matches
@@ -332,6 +400,10 @@ async function load(entry: OpenPanel): Promise<void> {
 
         await post(entry, basePayload(entry));
     } catch (err) {
+        if (!isCurrent(entry, request)) {
+            return;
+        }
+
         const message = err instanceof CliError ? err.stderr || err.message : String(err);
 
         deps.output.appendLine(`$ ${command}`);
@@ -340,6 +412,10 @@ async function load(entry: OpenPanel): Promise<void> {
         entry.entries = [];
         entry.rawJson = '';
         await post(entry, { ...basePayload(entry), error: message });
+    } finally {
+        if (entry.requests.finish(request)) {
+            entry.live.inFlight = false;
+        }
     }
 }
 
@@ -358,30 +434,71 @@ async function poll(entry: OpenPanel): Promise<void> {
 
     const startedMs = Date.now();
     const { fromMs, toMs } = pollWindow(entry.live, startedMs);
-    const { deps, values } = entry;
-    const spec = specFor(entry, pollValues(values, fromMs, toMs));
+    const deps = entry.deps;
+    const values = { ...entry.values };
+    const limit = normaliseLogLimit(values.limit);
+    const request = entry.requests.begin(requestTarget(entry), true);
 
     entry.live.inFlight = true;
     try {
-        const raw = await runJson<unknown>(deps.bin, spec);
-        const incoming = toLogEntries(raw);
-        const limit = Number(values.limit ?? 200);
-        const { entries, added } = mergeEntries(entry.entries, incoming, limit);
+        let cursor = fromMs;
+        let retained = entry.entries.map((item) => ({ ...item }));
+        let added = 0;
+        let lastReceived = 0;
+        let complete = false;
 
-        entry.entries = entries;
-        // Advance even when the response hit the limit. Holding lastPollMs would
-        // only widen the same ascending CLI window and freeze forever on its
-        // earliest page; truncationWarning is the mitigation for the unread
-        // middle of a catch-up gap that --limit could not return.
-        entry.live.lastPollMs = startedMs;
+        for (let page = 0; page < MAX_POLL_PAGES; page++) {
+            const spec = specFor(entry, pollValues(values, cursor, toMs), request.signal);
+            const raw = await runJson<unknown>(deps.bin, spec);
+            if (!isCurrent(entry, request)) {
+                return;
+            }
+
+            const incoming = toLogEntries(raw);
+            const merged = mergeEntries(retained, incoming, limit);
+            retained = merged.entries;
+            added += merged.added;
+            lastReceived = incoming.length;
+
+            if (incoming.length < limit) {
+                complete = true;
+                break;
+            }
+
+            const nextCursor = nextPollCursor(incoming, cursor);
+            if (nextCursor === undefined) {
+                // The CLI has no secondary cursor for more than Limit records at
+                // one timestamp. Staying here is safer than skipping them.
+                break;
+            }
+            cursor = nextCursor;
+        }
+
+        if (!isCurrent(entry, request)) {
+            return;
+        }
+
+        entry.entries = retained;
+        if (complete) {
+            entry.live.lastPollMs = startedMs;
+            entry.live.catchUpFromMs = undefined;
+        } else {
+            // Continue next tick from only what this request proved consumed.
+            // This avoids advancing to `startedMs` past unread newer records.
+            entry.live.catchUpFromMs = cursor;
+        }
         entry.liveStatus = {
             enabled: true,
             updatedAt: new Date(startedMs).toLocaleTimeString(),
-            warning: truncationWarning(incoming.length, limit),
+            warning: complete ? undefined : truncationWarning(lastReceived, limit),
         };
 
-        await post(entry, { ...basePayload(entry), entries, merged: true, added });
+        await post(entry, { ...basePayload(entry), merged: true, added });
     } catch (err) {
+        if (!isCurrent(entry, request)) {
+            return;
+        }
+
         const message = err instanceof CliError ? err.stderr || err.message : String(err);
         deps.output.appendLine(`live poll failed: ${message}`);
 
@@ -390,17 +507,25 @@ async function poll(entry: OpenPanel): Promise<void> {
         entry.liveStatus = { enabled: true, error: message };
         await postStatusOnly(entry);
     } finally {
-        entry.live.inFlight = false;
+        if (entry.requests.finish(request)) {
+            entry.live.inFlight = false;
+        }
     }
 }
 
 function post(entry: OpenPanel, payload: LogsPayload): Thenable<boolean> {
+    if (entry.requests.isDisposed) {
+        return Promise.resolve(false);
+    }
     return entry.panel.webview.postMessage({ type: 'logs', payload });
 }
 
 function postVisible(entry: OpenPanel, filter: LogFilter, group: boolean): Thenable<boolean> {
     const indices = visibleIndices(entry.entries, filter);
 
+    if (entry.requests.isDisposed) {
+        return Promise.resolve(false);
+    }
     return entry.panel.webview.postMessage({
         type: 'visible',
         indices,
@@ -414,8 +539,14 @@ function postVisible(entry: OpenPanel, filter: LogFilter, group: boolean): Thena
 async function copyToClipboard(entry: OpenPanel, text: string, label: string): Promise<void> {
     try {
         await vscode.env.clipboard.writeText(text);
+        if (entry.requests.isDisposed) {
+            return;
+        }
         await entry.panel.webview.postMessage({ type: 'copied', label });
     } catch (err) {
+        if (entry.requests.isDisposed) {
+            return;
+        }
         await entry.panel.webview.postMessage({
             type: 'copied',
             label,

@@ -4,6 +4,32 @@ import { LogEntry } from './entries';
 import { LogGroup } from './groups';
 import { LiveStatus } from './live';
 
+/**
+ * The deliberately small host-to-webview entry shape.
+ *
+ * `LogEntry.digest` contains the complete canonical source record so the host
+ * can compare occurrences exactly. It must remain host-private: the webview
+ * needs only the presentation id and redacted display/copy fields.
+ */
+export type WebviewLogEntry = Pick<
+    LogEntry,
+    'id' | 'timestamp' | 'rawTimestamp' | 'severity' | 'level' | 'message' | 'fields' | 'raw'
+>;
+
+/** Strip host-private merge identity at the extension-host/webview boundary. */
+export function toWebviewEntries(entries: LogEntry[]): WebviewLogEntry[] {
+    return entries.map((entry) => ({
+        id: entry.id,
+        timestamp: entry.timestamp,
+        rawTimestamp: entry.rawTimestamp,
+        severity: entry.severity,
+        level: entry.level,
+        message: entry.message,
+        fields: entry.fields,
+        raw: entry.raw,
+    }));
+}
+
 export interface LogsPayload {
     heading: string;
     subtitle: string;
@@ -12,7 +38,7 @@ export interface LogsPayload {
     controlValues: ControlValues;
     /** Validation problem with the current control selection. */
     controlError?: string;
-    entries: LogEntry[];
+    entries: WebviewLogEntry[];
     /** Distinct severities present, worst first. Drives the severity chips. */
     severities: string[];
     rawJson: string;

@@ -28,7 +28,8 @@ export interface LogEntry {
     searchText: string;
     /**
      * Opaque canonical form of the untouched source record, for occurrence-aware
-     * deduplication in src/logs/merge.ts. Never displayed.
+     * deduplication in src/logs/merge.ts. Host-private: stripped by
+     * toWebviewEntries() before a payload crosses into the webview.
      */
     digest: string;
     /** Redacted copy of the source record, for Copy JSON. */
