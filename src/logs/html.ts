@@ -89,6 +89,38 @@ const LOGS_CSS = `
     background: var(--vscode-button-background);
   }
   .backTop.hidden { display: none; }
+  .head, .detail dt, .detail dd { position: relative; }
+  .pop { display: none; }
+  .pop.open {
+    position: absolute;
+    z-index: 20;
+    left: 0;
+    top: 2px;
+    display: flex;
+    flex-direction: column;
+    min-width: 170px;
+    padding: 4px;
+    border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+    border-radius: 4px;
+    background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  }
+  .popItem {
+    text-align: left;
+    background: transparent;
+    color: var(--vscode-foreground);
+    font-size: 0.9em;
+  }
+  .popItem:hover { background: var(--vscode-list-hoverBackground); }
+  button.msg, button.fieldName, button.fieldValue {
+    padding: 0;
+    text-align: left;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+  }
+  button.msg:hover, button.fieldName:hover, button.fieldValue:hover {
+    text-decoration: underline;
+  }
 `;
 
 const LOGS_BODY = `
@@ -148,6 +180,123 @@ export const LOGS_SCRIPT = `
   let liveOn = false;
   let groupOn = false;
   let debounce = null;
+
+  // Exactly one popover is open at a time, tracked here so opening another or
+  // pressing Escape closes it. It is appended next to its trigger rather than to
+  // the body so it inherits the row's position without any coordinate maths.
+  let openPop = null;
+
+  function closePop() {
+    if (openPop) {
+      openPop.textContent = '';
+      openPop.classList.remove('open');
+      openPop = null;
+    }
+  }
+
+  /**
+   * Attach an action menu to a trigger button.
+   *
+   * Items are buttons, not clickable spans, so they are keyboard-reachable and
+   * announce as controls. Every label is set with textContent — log content
+   * reaches these menus, and this document's CSP allows no markup either way.
+   */
+  function attachPop(trigger, host, build) {
+    trigger.setAttribute('aria-haspopup', 'menu');
+    trigger.addEventListener('click', (event) => {
+      if (event && event.stopPropagation) { event.stopPropagation(); }
+
+      const reopening = openPop === host;
+      closePop();
+      if (reopening) { return; }
+
+      for (const item of build()) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'popItem';
+        button.textContent = item.label;
+        button.addEventListener('click', (inner) => {
+          if (inner && inner.stopPropagation) { inner.stopPropagation(); }
+          item.run();
+          closePop();
+        });
+        host.appendChild(button);
+      }
+
+      host.classList.add('open');
+      openPop = host;
+    });
+  }
+
+  /** Mirrors src/logs/filter.ts — quoted so commas, quotes and spaces round-trip. */
+  function messageExpr(message, prefix) {
+    return 'message' + (prefix ? '^' : '') + '=' + JSON.stringify(message);
+  }
+
+  function fieldExpr(path, value, prefix) {
+    return path + (prefix ? '^' : '') + '=' + JSON.stringify(value);
+  }
+
+  /**
+   * Append to a filter box without disturbing what is already there.
+   *
+   * The duplicate check is a plain scan of the trimmed lines and commas — the
+   * host's splitExpressions is the authority, and this only needs to stop the
+   * same menu action stacking up when clicked twice.
+   */
+  function addExpression(id, expression) {
+    const input = el(id);
+    const existing = input.value.replace(/\\s+$/, '');
+    const already = existing
+      .split(/[\\n,]/)
+      .map((part) => part.trim())
+      .indexOf(expression) !== -1;
+
+    if (!already) {
+      input.value = existing ? existing + '\\n' + expression : expression;
+    }
+
+    requestFilter();
+    setStatus(already ? 'Filter already present' : 'Filter added');
+  }
+
+  function copy(text, label) {
+    // The host owns the clipboard: vscode.env.clipboard.writeText works whether
+    // or not the webview has focus, which navigator.clipboard does not.
+    vscode.postMessage({ type: 'copy', text: text, label: label });
+  }
+
+  let statusTimer = null;
+  function setStatus(text) {
+    el('status').textContent = text;
+    if (statusTimer) { clearTimeout(statusTimer); }
+    statusTimer = setTimeout(() => { el('status').textContent = ''; }, 2500);
+  }
+
+  /**
+   * The message-title menu, shared by a row head and a group head.
+   *
+   * \`entry\` is null for a group: "Copy JSON" means *this* redacted record, and a
+   * group has many. Everything else is a function of the title alone, which is
+   * exactly why grouping needs no second menu.
+   */
+  function titleActions(message, entry) {
+    const items = [{ label: 'Copy', run: () => copy(message, 'Message') }];
+
+    if (entry) {
+      items.push({
+        label: 'Copy JSON',
+        run: () => copy(JSON.stringify(entry.raw, null, 2), 'Entry JSON'),
+      });
+    }
+
+    return items.concat([
+      { label: 'Include', run: () => addExpression('include', messageExpr(message, false)) },
+      { label: 'Exclude', run: () => addExpression('exclude', messageExpr(message, false)) },
+      { label: 'Include prefix', run: () => addExpression('include', messageExpr(message, true)) },
+      { label: 'Exclude prefix', run: () => addExpression('exclude', messageExpr(message, true)) },
+    ]);
+  }
 
   function currentFilter() {
     return {
@@ -257,6 +406,7 @@ export const LOGS_SCRIPT = `
     payload.entries.forEach((entry, index) => {
       const row = document.createElement('div');
       row.className = 'entry';
+      row.dataset.id = entry.id;
       row.dataset.index = String(index);
 
       const head = document.createElement('div');
@@ -279,12 +429,19 @@ export const LOGS_SCRIPT = `
         head.appendChild(sev);
       }
 
-      // The message is the title — the one thing every entry has and the one
-      // thing worth reading at a glance.
-      const msg = document.createElement('span');
+      // The message is the title, and the one thing worth acting on directly.
+      const msg = document.createElement('button');
+      msg.type = 'button';
       msg.className = 'msg';
       msg.textContent = entry.message;
+      msg.setAttribute('aria-label', 'Actions for ' + entry.message);
       head.appendChild(msg);
+
+      const msgPop = document.createElement('div');
+      msgPop.className = 'pop';
+      head.appendChild(msgPop);
+
+      attachPop(msg, msgPop, () => titleActions(entry.message, entry));
 
       head.addEventListener('click', () => {
         const open = row.classList.toggle('open');
@@ -297,13 +454,13 @@ export const LOGS_SCRIPT = `
       const list = document.createElement('dl');
 
       if (entry.rawTimestamp) {
-        addField(list, 'timestamp', entry.rawTimestamp);
+        addField(list, 'timestamp', entry.rawTimestamp, false);
       }
       for (const field of entry.fields) {
-        addField(list, field.key, field.value);
+        addField(list, field.key, field.value, true);
       }
       if (entry.fields.length === 0) {
-        addField(list, '(no fields)', '');
+        addField(list, '(no fields)', '', false);
       }
 
       detail.appendChild(list);
@@ -314,12 +471,59 @@ export const LOGS_SCRIPT = `
     requestFilter();
   }
 
-  function addField(list, key, value) {
+  function addField(list, key, value, actionable) {
     const dt = document.createElement('dt');
-    dt.textContent = key;
+    if (actionable) {
+      const name = document.createElement('button');
+      name.type = 'button';
+      name.className = 'fieldName';
+      name.textContent = key;
+      dt.appendChild(name);
+      const namePop = document.createElement('div');
+      namePop.className = 'pop';
+      dt.appendChild(namePop);
+      attachPop(name, namePop, () => [
+        { label: 'Copy field path', run: () => copy(key, 'Field path') },
+        {
+          label: 'Include field prefix',
+          run: () => addExpression('include', key + '.*'),
+        },
+        {
+          label: 'Exclude field prefix',
+          run: () => addExpression('exclude', key + '.*'),
+        },
+      ]);
+    } else {
+      dt.textContent = key;
+    }
     list.appendChild(dt);
+
     const dd = document.createElement('dd');
-    dd.textContent = value;
+    if (actionable) {
+      const shown = document.createElement('button');
+      shown.type = 'button';
+      shown.className = 'fieldValue';
+      shown.textContent = value;
+      dd.appendChild(shown);
+      const valuePop = document.createElement('div');
+      valuePop.className = 'pop';
+      dd.appendChild(valuePop);
+      attachPop(shown, valuePop, () => [
+        { label: 'Copy', run: () => copy(value, 'Value') },
+        { label: 'Include', run: () => addExpression('include', fieldExpr(key, value, false)) },
+        { label: 'Exclude', run: () => addExpression('exclude', fieldExpr(key, value, false)) },
+        {
+          label: 'Include value prefix',
+          run: () => addExpression('include', fieldExpr(key, value, true)),
+        },
+        {
+          label: 'Exclude value prefix',
+          run: () => addExpression('exclude', fieldExpr(key, value, true)),
+        },
+      ]);
+    } else {
+      dd.textContent = value;
+    }
     list.appendChild(dd);
   }
 
@@ -382,6 +586,11 @@ export const LOGS_SCRIPT = `
   });
   wireRawPane();
 
+  document.addEventListener('click', closePop);
+  document.addEventListener('keydown', (event) => {
+    if (event && event.key === 'Escape') { closePop(); }
+  });
+
   window.addEventListener('message', (event) => {
     const data = event.data;
     if (!data) { return; }
@@ -391,6 +600,8 @@ export const LOGS_SCRIPT = `
       render();
     } else if (data.type === 'visible') {
       applyVisible(data.indices, data.total);
+    } else if (data.type === 'copied') {
+      setStatus(data.error ? 'Copy failed: ' + data.error : data.label + ' copied');
     }
   });
 }());

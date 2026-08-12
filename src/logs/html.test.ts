@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { RAW_PANE_SCRIPT } from '../webview/shell';
+import { fieldExpression, fieldPrefixExpression, messageExpression } from './filter';
 import { LOGS_SCRIPT, renderLogsHtml } from './html';
 
 /**
@@ -28,6 +29,7 @@ interface StubNode {
     };
     appendChild(child: StubNode): void;
     querySelector(selector: string): StubNode | undefined;
+    setAttribute(name: string, value: string): void;
     addEventListener(name: string, fn: (event?: unknown) => void): void;
     fire(name: string, event?: unknown): void;
 }
@@ -146,6 +148,9 @@ function makeNode(tag: string, all: StubNode[]): StubNode {
             const want = selector.replace('.', '');
             return self.children.find((child) => child.classList.contains(want));
         },
+        setAttribute(_name, _value) {
+            // aria-* and similar; the stub only needs the call not to throw.
+        },
         addEventListener(name, fn) {
             (listeners[name] ??= []).push(fn as (event?: unknown) => void);
         },
@@ -163,6 +168,7 @@ function makeNode(tag: string, all: StubNode[]): StubNode {
 function harness() {
     const all: StubNode[] = [];
     const byId = new Map<string, StubNode>();
+    const documentListeners: Record<string, Array<(event: unknown) => void>> = {};
 
     for (const id of ELEMENT_IDS) {
         const element = makeNode('div', all);
@@ -175,6 +181,9 @@ function harness() {
         createElement: (tag: string) => makeNode(tag, all),
         querySelectorAll: (selector: string) =>
             all.filter((n) => n.classList.contains(selector.replace('.', ''))),
+        addEventListener(name: string, fn: (event: unknown) => void) {
+            (documentListeners[name] ??= []).push(fn);
+        },
     };
 
     const posted: Array<Record<string, unknown>> = [];
@@ -205,6 +214,24 @@ function harness() {
         () => {},
     );
 
+    /** The action button inside the `dt` for `path`, or inside the `dd` that follows it. */
+    function fieldNode(rowIndex: number, path: string, which: 'dt' | 'dd'): StubNode {
+        const row = (byId.get('body') as StubNode).children[rowIndex];
+        const detail = row.children.find((child) => child.classList.contains('detail'));
+        const list = detail?.children[0];
+        const cells = list?.children ?? [];
+
+        const at = cells.findIndex(
+            (cell) => cell.tag === 'dt' && cell.children[0]?.textContent === path,
+        );
+        if (at === -1) {
+            throw new Error(`no field row for "${path}"`);
+        }
+
+        const cell = which === 'dt' ? cells[at] : cells[at + 1];
+        return cell.children[0];
+    }
+
     return {
         posted,
         node: (id: string) => byId.get(id) as StubNode,
@@ -216,6 +243,46 @@ function harness() {
                 throw new Error('the script never registered a message listener');
             }
             onMessage({ data: { type: 'logs', payload } });
+        },
+        receive(data: unknown) {
+            if (!onMessage) {
+                throw new Error('the script never registered a message listener');
+            }
+            onMessage({ data });
+        },
+        pressEscape() {
+            (documentListeners.keydown ?? []).forEach((fn) => fn({ key: 'Escape' }));
+        },
+        documentClick() {
+            (documentListeners.click ?? []).forEach((fn) => fn({}));
+        },
+        fieldNameButton(row: number, path: string) {
+            return fieldNode(row, path, 'dt');
+        },
+        fieldValueButton(row: number, path: string) {
+            return fieldNode(row, path, 'dd');
+        },
+        /** The row-title button of row `n`. */
+        titleButton(n: number) {
+            const row = (byId.get('body') as StubNode).children[n];
+            const head = row.children.find((c) => c.classList.contains('head')) as StubNode;
+            return head.children.find((c) => c.classList.contains('msg')) as StubNode;
+        },
+        /** Labels of the currently open popover, in order. */
+        popoverLabels(): string[] {
+            return all
+                .filter((node) => node.classList.contains('pop'))
+                .flatMap((pop) => pop.children.map((item) => item.textContent));
+        },
+        clickPopover(label: string) {
+            const item = all
+                .filter((node) => node.classList.contains('pop'))
+                .flatMap((pop) => pop.children)
+                .find((child) => child.textContent === label);
+            if (!item) {
+                throw new Error(`no popover item labelled "${label}"`);
+            }
+            item.fire('click');
         },
         chips(): Chip[] {
             return (byId.get('sevs') as StubNode).children.map((chip) => ({
@@ -451,5 +518,206 @@ describe('the filter boxes', () => {
         expect(html).toContain('<textarea id="include"');
         expect(html).toContain('<textarea id="exclude"');
         expect(html).not.toContain('id="include" placeholder');
+    });
+});
+
+describe('row title actions (executed)', () => {
+    it('opens a popover with copy and filter actions', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+
+        expect(view.popoverLabels()).toEqual([
+            'Copy',
+            'Copy JSON',
+            'Include',
+            'Exclude',
+            'Include prefix',
+            'Exclude prefix',
+        ]);
+    });
+
+    it('Include appends an exact quoted message expression and re-filters', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+
+        expect(view.node('include').value).toBe('message="workflow started"');
+        expect(view.posted.at(-1)).toMatchObject({
+            type: 'filter',
+            filter: { include: 'message="workflow started"' },
+        });
+    });
+
+    it('Exclude prefix appends the prefix form to the Exclude box, leaving Include alone', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Exclude prefix');
+
+        expect(view.node('exclude').value).toBe('message^="workflow started"');
+        expect(view.node('include').value).toBe('');
+    });
+
+    it('appends on a new line, preserving what the user typed', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.node('include').value = 'orders';
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+
+        expect(view.node('include').value).toBe('orders\nmessage="workflow started"');
+    });
+
+    it('ignores an exact duplicate, so clicking Include twice does not stack expressions', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+
+        expect(view.node('include').value).toBe('message="workflow started"');
+    });
+
+    it('asks the host to copy the message text', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Copy');
+
+        expect(view.posted.at(-1)).toEqual({
+            type: 'copy',
+            text: 'workflow started',
+            label: 'Message',
+        });
+    });
+
+    it('asks the host to copy this entry as redacted, two-space-indented JSON', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Copy JSON');
+
+        const posted = view.posted.at(-1) as { type: string; text: string };
+        expect(posted.type).toBe('copy');
+        expect(posted.text).toContain('\n  "message"');
+        expect(JSON.parse(posted.text)).toMatchObject({ message: 'workflow started' });
+    });
+
+    it('announces a completed copy in the polite status region', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.receive({ type: 'copied', label: 'Message' });
+
+        expect(view.node('status').textContent).toContain('Message copied');
+    });
+
+    it('reports a failed copy without clearing the popover state', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.receive({ type: 'copied', label: 'Message', error: 'clipboard unavailable' });
+
+        expect(view.node('status').textContent).toContain('clipboard unavailable');
+    });
+
+    it('closes the popover after an action, so the row is readable again', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+
+        expect(view.popoverLabels()).toEqual([]);
+    });
+
+    it('closes an open popover on Escape', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.pressEscape();
+
+        expect(view.popoverLabels()).toEqual([]);
+    });
+});
+
+describe('field actions (executed)', () => {
+    it('offers path-scoped filters on a field value', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.fieldValueButton(0, 'fields.triggerName').fire('click');
+
+        expect(view.popoverLabels()).toEqual([
+            'Copy',
+            'Include',
+            'Exclude',
+            'Include value prefix',
+            'Exclude value prefix',
+        ]);
+
+        view.clickPopover('Include');
+        expect(view.node('include').value).toBe('fields.triggerName="get-pricing"');
+    });
+
+    it('offers field-path prefix filters on a field name', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.fieldNameButton(0, 'fields.triggerName').fire('click');
+
+        expect(view.popoverLabels()).toEqual([
+            'Copy field path',
+            'Include field prefix',
+            'Exclude field prefix',
+        ]);
+
+        view.clickPopover('Include field prefix');
+        expect(view.node('include').value).toBe('fields.triggerName.*');
+    });
+});
+
+/**
+ * The webview script is a template literal, not a module, so it re-implements
+ * the two-line serialise shapes. These pins compare the executed inline output
+ * to the host exports — not to a hardcoded expected string.
+ */
+describe('inline webview serialisers match filter.ts (executed)', () => {
+    it('quotes a message with comma, quote and newline the same way', () => {
+        const tricky = 'a, "b"\nc';
+        const view = harness();
+        const payload = payloadWith(['info']);
+        payload.entries[0]!.message = tricky;
+        view.sendLogs(payload);
+
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+        expect(view.node('include').value).toBe(messageExpression(tricky));
+
+        view.node('include').value = '';
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include prefix');
+        expect(view.node('include').value).toBe(messageExpression(tricky, true));
+    });
+
+    it('quotes a field value and path-prefix the same way', () => {
+        const tricky = 'x, "y"\nz';
+        const path = 'fields.triggerName';
+        const view = harness();
+        const payload = payloadWith(['info']);
+        payload.entries[0]!.fields = [{ key: path, value: tricky }];
+        view.sendLogs(payload);
+
+        view.fieldValueButton(0, path).fire('click');
+        view.clickPopover('Include');
+        expect(view.node('include').value).toBe(fieldExpression(path, tricky));
+
+        view.node('include').value = '';
+        view.fieldValueButton(0, path).fire('click');
+        view.clickPopover('Include value prefix');
+        expect(view.node('include').value).toBe(fieldExpression(path, tricky, true));
+
+        view.node('include').value = '';
+        view.fieldNameButton(0, path).fire('click');
+        view.clickPopover('Include field prefix');
+        expect(view.node('include').value).toBe(fieldPrefixExpression(path));
     });
 });
