@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { fieldKeys, flattenDeep, severitiesOf, toLogEntries } from './entries';
+import { assignIds, flattenDeep, severitiesOf, severityRank, sourceDigest, toLogEntries } from './entries';
 
 // The real shape, verified against `versori projects logs -o json`: NDJSON, one
 // object per line, identifiers nested under `fields`.
@@ -193,21 +193,6 @@ describe('toLogEntries', () => {
     });
 });
 
-describe('fieldKeys', () => {
-    it('orders keys by how often they are populated, most-filled first', () => {
-        const entries = toLogEntries([
-            { timestamp: record.timestamp, severity: 'INFO', message: 'a', fields: { name: 'x' } },
-            {
-                timestamp: record.timestamp,
-                severity: 'INFO',
-                message: 'b',
-                fields: { name: 'y', rare: 'z' },
-            },
-        ]);
-        expect(fieldKeys(entries)).toEqual(['fields.name', 'fields.rare']);
-    });
-});
-
 describe('severitiesOf', () => {
     it('lists distinct severities worst-first, so the noisy ones sort last', () => {
         const entries = toLogEntries([
@@ -217,5 +202,69 @@ describe('severitiesOf', () => {
             { timestamp: record.timestamp, severity: 'ERROR', message: 'd' },
         ]);
         expect(severitiesOf(entries)).toEqual(['ERROR', 'INFO', 'DEBUG']);
+    });
+});
+
+describe('sourceDigest', () => {
+    it('is equal for byte-equivalent records whose keys arrived in a different order', () => {
+        const a = { timestamp: 't', severity: 'INFO', message: 'm', fields: { a: 1, b: 2 } };
+        const b = { fields: { b: 2, a: 1 }, message: 'm', severity: 'INFO', timestamp: 't' };
+        expect(sourceDigest(a)).toBe(sourceDigest(b));
+    });
+
+    it('differs when any part of the record differs, so a merge cannot swallow a real entry', () => {
+        const a = { timestamp: 't', severity: 'INFO', message: 'm', fields: { n: 1 } };
+        expect(sourceDigest(a)).not.toBe(sourceDigest({ ...a, fields: { n: 2 } }));
+        expect(sourceDigest(a)).not.toBe(sourceDigest({ ...a, message: 'other' }));
+    });
+
+    it('is computed before redaction, so two records differing only in a secret are distinct', () => {
+        const base = { timestamp: 't', severity: 'INFO', message: 'm' };
+        expect(sourceDigest({ ...base, token: 'aaa' })).not.toBe(
+            sourceDigest({ ...base, token: 'bbb' }),
+        );
+    });
+});
+
+describe('entry identity', () => {
+    it('keeps a redacted copy of the source record for Copy JSON', () => {
+        const entry = toLogEntries([{ ...record, fields: { ...record.fields, token: 'sk-live' } }])[0];
+        expect((entry.raw.fields as Record<string, unknown>).token).toBe('[redacted]');
+        expect(entry.raw.message).toBe('DurableInterpreter.executionCompleted');
+    });
+
+    it('gives every entry a distinct id', () => {
+        const entries = toLogEntries([
+            { ...record, message: 'a' },
+            { ...record, message: 'b' },
+        ]);
+        expect(new Set(entries.map((e) => e.id)).size).toBe(2);
+    });
+
+    it('numbers byte-identical duplicates from the oldest end, so a prepended duplicate cannot renumber an entry the webview already has open', () => {
+        const dup = { ...record, message: 'heartbeat' };
+        const two = assignIds(toLogEntries([dup, dup]));
+        const three = assignIds(toLogEntries([dup, dup, dup]));
+
+        // The two oldest keep the ids they had; only the newly prepended one is new.
+        expect(three.slice(1).map((e) => e.id)).toEqual(two.map((e) => e.id));
+    });
+});
+
+describe('searchText', () => {
+    it('includes field names as well as values, so "executionId" finds entries that have one', () => {
+        const entry = toLogEntries([record])[0];
+        expect(entry.searchText).toContain('fields.executionId');
+    });
+});
+
+describe('severityRank', () => {
+    it('ranks worse severities lower, whatever spelling the workflow used', () => {
+        expect(severityRank('FATAL')).toBeLessThan(severityRank('warning'));
+        expect(severityRank('warning')).toBeLessThan(severityRank('info'));
+    });
+
+    it('sorts an unrecognised severity after every known one', () => {
+        expect(severityRank('nonsense')).toBeGreaterThan(severityRank('debug'));
     });
 });

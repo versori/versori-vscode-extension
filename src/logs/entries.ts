@@ -6,6 +6,11 @@ export interface LogField {
 }
 
 export interface LogEntry {
+    /**
+     * Stable identity for the webview: it records which rows are expanded by id
+     * and restores them after a re-render, so this must survive a live merge.
+     */
+    id: string;
     /** Display timestamp, local time. */
     timestamp: string;
     /** Exactly as the CLI emitted it. */
@@ -17,10 +22,17 @@ export interface LogEntry {
     message: string;
     fields: LogField[];
     /**
-     * Headline + severity + both timestamp forms + every field value, original
-     * case, for substring matching.
+     * Headline + severity + both timestamp forms + every field **name and
+     * value**, original case, for substring matching.
      */
     searchText: string;
+    /**
+     * Opaque canonical form of the untouched source record, for occurrence-aware
+     * deduplication in src/logs/merge.ts. Never displayed.
+     */
+    digest: string;
+    /** Redacted copy of the source record, for Copy JSON. */
+    raw: Row;
 }
 
 /**
@@ -94,9 +106,11 @@ export function flattenDeep(value: unknown, prefix = '', depth = 0): LogField[] 
  *   message, severity, timestamp, error }
  */
 export function toLogEntries(raw: unknown): LogEntry[] {
-    return unwrapRows(raw)
-        .map(toEntry)
-        .sort((a, b) => compareTimestampsDesc(a.rawTimestamp, b.rawTimestamp));
+    return assignIds(
+        unwrapRows(raw)
+            .map(toEntry)
+            .sort((a, b) => compareTimestampsDesc(a.rawTimestamp, b.rawTimestamp)),
+    );
 }
 
 /** Newest first. Missing / unparseable timestamps sink to the bottom. */
@@ -138,14 +152,26 @@ function toEntry(row: Row): LogEntry {
     const timestamp = rawTimestamp ? formatCell(rawTimestamp) : '';
 
     return {
+        // Replaced by assignIds() once the whole page is ordered — an ordinal
+        // cannot be known from one row in isolation.
+        id: '',
         timestamp,
         rawTimestamp,
         severity,
         level: levelClass(severity),
         message,
         fields,
-        searchText: [message, severity, rawTimestamp, timestamp, ...fields.map((f) => f.value)]
-            .join(' '),
+        searchText: [
+            message,
+            severity,
+            rawTimestamp,
+            timestamp,
+            // Names as well as values: "executionId" should find every entry that
+            // carries one, without the user knowing any particular value.
+            ...fields.map((field) => `${field.key} ${field.value}`),
+        ].join(' '),
+        digest: sourceDigest(row),
+        raw: redact(row) as Row,
     };
 }
 
@@ -173,26 +199,6 @@ function firstKeyedString(row: Row, keys: string[]): { key?: string; value: stri
     return { value: '' };
 }
 
-/**
- * Every field key present, most-populated first.
- *
- * Derived from the data rather than hardcoded: each workflow puts different keys
- * under `fields`, so which ones are worth showing differs per project.
- */
-export function fieldKeys(entries: LogEntry[]): string[] {
-    const counts = new Map<string, number>();
-
-    for (const entry of entries) {
-        for (const field of entry.fields) {
-            counts.set(field.key, (counts.get(field.key) ?? 0) + 1);
-        }
-    }
-
-    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(
-        ([key]) => key,
-    );
-}
-
 /** Rank for severity ordering. Unrecognised severities sort after known ones. */
 const SEVERITY_RANK: Record<string, number> = {
     error: 0,
@@ -211,10 +217,79 @@ export function severitiesOf(entries: LogEntry[]): string[] {
         }
     }
 
-    return seen.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+    return seen.sort((a, b) => severityRank(a) - severityRank(b) || a.localeCompare(b));
 }
 
-function rank(severity: string): number {
+/** Rank for severity ordering. Unrecognised severities sort after known ones. */
+export function severityRank(severity: string): number {
     const cls = levelClass(severity);
     return cls ? SEVERITY_RANK[cls] : 4;
+}
+
+/**
+ * Canonical form of a source record, used only for comparing occurrences.
+ *
+ * The whole row is included rather than just timestamp/severity/message/fields:
+ * a digest narrower than the record can call two different entries identical,
+ * and the cost of being wrong in that direction is a real log line silently
+ * dropped by the live merge. Key order is normalised because JSON key order is
+ * not guaranteed across responses.
+ *
+ * Computed **before** redaction — two records differing only in a credential
+ * value are different records, and after redaction they would not be.
+ */
+export function sourceDigest(row: Row): string {
+    return JSON.stringify(canonical(row));
+}
+
+function canonical(value: unknown): unknown {
+    if (Array.isArray(value)) {
+        return value.map(canonical);
+    }
+    if (value && typeof value === 'object') {
+        const row = value as Row;
+        return Object.fromEntries(
+            Object.keys(row)
+                .sort()
+                .map((key) => [key, canonical(row[key])]),
+        );
+    }
+    return value;
+}
+
+/**
+ * Assign presentation ids.
+ *
+ * Ordinals are counted from the **oldest** end even though the list is
+ * newest-first. A live poll prepends, so counting from the newest end would
+ * renumber every existing occurrence of a repeated message each time another one
+ * arrived — and the webview restores expanded rows by id, so those rows would
+ * collapse (or the wrong ones would reopen) on every tick.
+ *
+ * The id is a short hash of the digest rather than the digest itself: the digest
+ * contains the whole record, and ids travel to the webview on every payload and
+ * sit in `data-id` attributes. A hash collision can only restore the wrong row's
+ * expanded state, which is why comparison in merge.ts uses the digest instead.
+ */
+export function assignIds(entries: LogEntry[]): LogEntry[] {
+    const seen = new Map<string, number>();
+
+    for (let index = entries.length - 1; index >= 0; index--) {
+        const entry = entries[index];
+        const ordinal = seen.get(entry.digest) ?? 0;
+        seen.set(entry.digest, ordinal + 1);
+        entry.id = `${shortHash(entry.digest)}#${ordinal}`;
+    }
+
+    return entries;
+}
+
+/** FNV-1a, 32-bit. Short, deterministic, and no crypto import in a pure module. */
+function shortHash(text: string): string {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index++) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash.toString(16).padStart(8, '0');
 }
