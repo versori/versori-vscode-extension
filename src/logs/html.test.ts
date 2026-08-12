@@ -170,7 +170,7 @@ function makeNode(tag: string, all: StubNode[]): StubNode {
     return self;
 }
 
-function harness() {
+function harness(options: { reducedMotion?: boolean } = {}) {
     const all: StubNode[] = [];
     const byId = new Map<string, StubNode>();
     const documentListeners: Record<string, Array<(event: unknown) => void>> = {};
@@ -193,11 +193,28 @@ function harness() {
 
     const posted: Array<Record<string, unknown>> = [];
     let onMessage: ((event: { data: unknown }) => void) | undefined;
+    const windowListeners: Record<string, Array<(event: unknown) => void>> = {};
+
+    let scrollY = 0;
+    const scrolls: Array<{ top: number; behavior?: string }> = [];
+
     const windowStub = {
-        addEventListener(name: string, fn: (event: { data: unknown }) => void) {
+        get scrollY() {
+            return scrollY;
+        },
+        scrollTo(request: { top: number; behavior?: string }) {
+            scrolls.push(request);
+            scrollY = request.top;
+            // The real browser fires scroll after a programmatic scroll too, and
+            // the script's own scroll handler is what re-enables following.
+            (windowListeners.scroll ?? []).forEach((fn) => fn({}));
+        },
+        matchMedia: () => ({ matches: Boolean(options.reducedMotion) }),
+        addEventListener(name: string, fn: (event: unknown) => void) {
             if (name === 'message') {
-                onMessage = fn;
+                onMessage = fn as (event: { data: unknown }) => void;
             }
+            (windowListeners[name] ??= []).push(fn);
         },
     };
 
@@ -237,11 +254,83 @@ function harness() {
         return cell.children[0];
     }
 
+    function groupNode(message: string): StubNode {
+        const found = (byId.get('body') as StubNode).children.find(
+            (child) => child.dataset.key === message,
+        );
+        if (!found) {
+            throw new Error(`no group for "${message}"`);
+        }
+        return found;
+    }
+
     return {
         posted,
+        scrolls,
         node: (id: string) => byId.get(id) as StubNode,
         click(id: string) {
             (byId.get(id) as StubNode).fire('click');
+        },
+        scrollDown(pixels: number) {
+            scrollY = pixels;
+            (windowListeners.scroll ?? []).forEach((fn) => fn({}));
+        },
+        row(index: number) {
+            return (byId.get('body') as StubNode).children[index];
+        },
+        expandRow(index: number) {
+            const row = (byId.get('body') as StubNode).children[index];
+            (row.children.find((c) => c.classList.contains('head')) as StubNode).fire('click');
+        },
+        group(message: string) {
+            return groupNode(message);
+        },
+        groupHeads() {
+            return (byId.get('body') as StubNode).children
+                .filter((child) => child.classList.contains('group'))
+                .map((node) => {
+                    const head = node.children.find((c) =>
+                        c.classList.contains('head'),
+                    ) as StubNode;
+                    return {
+                        message: (head.children.find((c) => c.classList.contains('msg')) as StubNode)
+                            .textContent,
+                        severity: (head.children.find((c) => c.classList.contains('sev')) as StubNode)
+                            .textContent,
+                        count: (head.children.find((c) =>
+                            c.classList.contains('groupCount'),
+                        ) as StubNode).textContent,
+                        latest: (head.children.find((c) => c.classList.contains('ts')) as StubNode)
+                            .textContent,
+                    };
+                });
+        },
+        expandGroup(message: string) {
+            const group = groupNode(message);
+            (group.children.find((c) => c.classList.contains('head')) as StubNode).fire('click');
+        },
+        groupRow(message: string, index: number) {
+            const group = groupNode(message);
+            const detail = group.children.find((c) => c.classList.contains('detail')) as StubNode;
+            return detail.children.filter((c) => c.classList.contains('entry'))[index];
+        },
+        expandGroupRow(message: string, index: number) {
+            const row = groupNode(message).children
+                .find((c) => c.classList.contains('detail'))!
+                .children.filter((c) => c.classList.contains('entry'))[index];
+            (row.children.find((c) => c.classList.contains('head')) as StubNode).fire('click');
+        },
+        groupRowMessages(message: string) {
+            const detail = groupNode(message).children.find((c) =>
+                c.classList.contains('detail'),
+            ) as StubNode;
+            return detail.children
+                .filter((c) => c.classList.contains('entry'))
+                .map((row) => {
+                    const head = row.children.find((c) => c.classList.contains('head')) as StubNode;
+                    return (head.children.find((c) => c.classList.contains('msg')) as StubNode)
+                        .textContent;
+                });
         },
         sendLogs(payload: TestPayload) {
             if (!onMessage) {
@@ -329,6 +418,46 @@ function payloadWith(severities: string[]): TestPayload {
         severities,
         live: { enabled: false },
         rawJson: '[]',
+    };
+}
+
+/** Two entries sharing a title, so grouping has something to collapse. */
+function twoEntryPayload(): TestPayload {
+    const base = payloadWith(['error', 'info']);
+    return {
+        ...base,
+        entries: [
+            {
+                id: 'aaaaaaaa#1',
+                timestamp: '2026-08-06 10:00:01',
+                rawTimestamp: '2026-08-06T10:00:01Z',
+                severity: 'ERROR',
+                level: 'error',
+                message: 'fetch orders',
+                fields: [{ key: 'fields.triggerName', value: 'get-pricing' }],
+                raw: { message: 'fetch orders' },
+            },
+            {
+                id: 'aaaaaaaa#0',
+                timestamp: '2026-08-06 10:00:00',
+                rawTimestamp: '2026-08-06T10:00:00Z',
+                severity: 'INFO',
+                level: 'info',
+                message: 'fetch orders',
+                fields: [{ key: 'fields.triggerName', value: 'get-pricing' }],
+                raw: { message: 'fetch orders' },
+            },
+        ],
+    };
+}
+
+function groupOfBoth() {
+    return {
+        message: 'fetch orders',
+        severity: 'ERROR',
+        level: 'error',
+        latest: '2026-08-06 10:00:01',
+        indices: [0, 1],
     };
 }
 
@@ -763,5 +892,218 @@ describe('inline webview serialisers match filter.ts (executed)', () => {
                 fieldExpression(path, fieldValue),
             ),
         );
+    });
+});
+
+describe('live follow-scroll (executed)', () => {
+    it('follows new entries while parked at the top', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 2;
+        view.sendLogs(merged);
+
+        expect(view.scrolls.at(-1)).toMatchObject({ top: 0 });
+        expect(view.node('backTop').className).toContain('hidden');
+    });
+
+    it('stops following once the user scrolls down, and counts what arrived', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 3;
+        view.sendLogs(merged);
+
+        expect(view.scrolls.filter((s) => s.top === 0)).toHaveLength(0);
+        expect(view.node('backTop').textContent).toBe('3 new logs · Back to top');
+        expect(view.node('backTop').className).not.toContain('hidden');
+    });
+
+    it('accumulates the count across several polls', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+
+        for (const added of [2, 1]) {
+            const merged = payloadWith(['info']);
+            merged.merged = true;
+            merged.added = added;
+            view.sendLogs(merged);
+        }
+
+        expect(view.node('backTop').textContent).toBe('3 new logs · Back to top');
+    });
+
+    it('says "1 new log" for a single entry', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 1;
+        view.sendLogs(merged);
+
+        expect(view.node('backTop').textContent).toBe('1 new log · Back to top');
+    });
+
+    it('Back to top scrolls, clears the count and re-enables following', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 2;
+        view.sendLogs(merged);
+
+        view.click('backTop');
+
+        expect(view.scrolls.at(-1)).toMatchObject({ top: 0, behavior: 'smooth' });
+        expect(view.node('backTop').className).toContain('hidden');
+    });
+
+    it('does not animate under prefers-reduced-motion', () => {
+        const view = harness({ reducedMotion: true });
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 1;
+        view.sendLogs(merged);
+        view.click('backTop');
+
+        expect(view.scrolls.at(-1)).toMatchObject({ behavior: 'auto' });
+    });
+
+    it('resets the pending count on a replacement load, because the page is new', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 2;
+        view.sendLogs(merged);
+
+        view.sendLogs(payloadWith(['info'])); // manual Refresh
+
+        expect(view.node('backTop').className).toContain('hidden');
+    });
+});
+
+describe('expanded rows across a payload (executed)', () => {
+    it('keeps a row expanded when the same entry comes back in a merge', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.expandRow(0);
+
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 0;
+        view.sendLogs(merged);
+
+        expect(view.row(0).className).toContain('open');
+    });
+
+    it('does not expand an unrelated entry that happens to land at the same position', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.expandRow(0);
+
+        const next = payloadWith(['info']);
+        next.entries[0] = { ...next.entries[0], id: 'other#0', message: 'different' };
+        next.merged = true;
+        view.sendLogs(next);
+
+        expect(view.row(0).className).not.toContain('open');
+    });
+
+    it('expands a row from its chevron button, so expansion is keyboard reachable', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        const head = view.row(0).children.find((c) => c.classList.contains('head'));
+        const twist = head!.children.find((c) => c.classList.contains('twist'));
+
+        expect(twist!.tag).toBe('button');
+        twist!.fire('click');
+        expect(view.row(0).className).toContain('open');
+    });
+});
+
+describe('grouped rendering (executed)', () => {
+    it('renders one row per group with its count, worst severity and latest time', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({
+            type: 'visible',
+            indices: [0, 1],
+            total: 2,
+            groups: [
+                {
+                    message: 'fetch orders',
+                    severity: 'ERROR',
+                    level: 'error',
+                    latest: '2026-08-06 10:00:01',
+                    indices: [0, 1],
+                },
+            ],
+        });
+
+        expect(view.groupHeads()).toEqual([
+            { message: 'fetch orders', severity: 'ERROR', count: '2', latest: '2026-08-06 10:00:01' },
+        ]);
+    });
+
+    it('reveals its instances newest-first when a group is expanded', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+        view.expandGroup('fetch orders');
+
+        expect(view.groupRowMessages('fetch orders')).toEqual(['fetch orders', 'fetch orders']);
+    });
+
+    it('keeps each instance independently expandable with its own field actions', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+        view.expandGroup('fetch orders');
+        view.expandGroupRow('fetch orders', 1);
+
+        expect(view.groupRow('fetch orders', 1).className).toContain('open');
+        expect(view.groupRow('fetch orders', 0).className).not.toContain('open');
+    });
+
+    it('keeps a group open across a live merge', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+        view.expandGroup('fetch orders');
+
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+
+        expect(view.group('fetch orders').className).toContain('open');
+    });
+
+    it('returns to the flat list when grouping is switched off', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+        view.receive({ type: 'visible', indices: [0, 1], total: 2 });
+
+        expect(view.groupHeads()).toEqual([]);
+        expect(view.node('body').children.filter((c) => c.classList.contains('entry'))).toHaveLength(2);
+    });
+
+    it('counts groups as well as entries', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+
+        expect(view.node('count').textContent).toBe('1 group · 2 entries');
     });
 });

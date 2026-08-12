@@ -121,6 +121,15 @@ const LOGS_CSS = `
   button.msg:hover, button.fieldName:hover, button.fieldValue:hover {
     text-decoration: underline;
   }
+  button.twist {
+    padding: 0;
+    background: transparent;
+    color: var(--vscode-descriptionForeground);
+    font-size: 0.8em;
+  }
+  button.twist:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+  .entry.group > .detail { padding-left: 18px; }
+  .groupCount { font-variant-numeric: tabular-nums; }
 `;
 
 const LOGS_BODY = `
@@ -180,11 +189,61 @@ export const LOGS_SCRIPT = `
   let liveOn = false;
   let groupOn = false;
   let debounce = null;
+  /** 'flat' or 'group' — what the body currently holds, so a switch rebuilds it. */
+  let mode = 'flat';
+
+  /**
+   * Auto-follow is a function of position, not a mode the user sets: the viewer
+   * follows new entries only while parked at the newest one. Anything else means
+   * the user is reading, and moving the viewport under them is the one thing a
+   * live log view must not do.
+   */
+  const FOLLOW_TOLERANCE = 24;
+  let follow = true;
+  let pending = 0;
+
+  // Which rows and groups the user has expanded, by identity rather than
+  // position. A merge prepends entries, so an index-based memory would reopen
+  // whichever row slid into the remembered slot.
+  let openIds = new Set();
+  let openGroups = new Set();
 
   // Exactly one popover is open at a time, tracked here so opening another or
   // pressing Escape closes it. It is appended next to its trigger rather than to
   // the body so it inherits the row's position without any coordinate maths.
   let openPop = null;
+
+  function atTop() {
+    return (window.scrollY || 0) <= FOLLOW_TOLERANCE;
+  }
+
+  function smooth() {
+    return !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+
+  function toTop() {
+    window.scrollTo({ top: 0, behavior: smooth() ? 'smooth' : 'auto' });
+    pending = 0;
+    follow = true;
+    updateBackTop();
+  }
+
+  function updateBackTop() {
+    const button = el('backTop');
+    const show = pending > 0 && !follow;
+    button.classList.toggle('hidden', !show);
+    button.textContent = show
+      ? pending + (pending === 1 ? ' new log · Back to top' : ' new logs · Back to top')
+      : '';
+  }
+
+  window.addEventListener('scroll', () => {
+    follow = atTop();
+    if (follow) { pending = 0; }
+    updateBackTop();
+  });
+
+  el('backTop').addEventListener('click', toTop);
 
   function closePop() {
     if (openPop) {
@@ -401,6 +460,164 @@ export const LOGS_SCRIPT = `
     }
   }
 
+  function makeRow(entry, index) {
+    const row = document.createElement('div');
+    row.className = 'entry';
+    row.dataset.id = entry.id;
+    row.dataset.index = String(index);
+
+    const head = document.createElement('div');
+    head.className = 'head';
+
+    const twist = document.createElement('button');
+    twist.type = 'button';
+    twist.className = 'twist';
+    twist.setAttribute('aria-label', 'Expand entry');
+    head.appendChild(twist);
+
+    const ts = document.createElement('span');
+    ts.className = 'ts';
+    ts.textContent = entry.timestamp;
+    head.appendChild(ts);
+
+    if (entry.severity) {
+      const sev = document.createElement('span');
+      sev.className = 'sev chip ' + (entry.level || 'muted');
+      sev.textContent = entry.severity;
+      head.appendChild(sev);
+    }
+
+    // The message is the title, and the one thing worth acting on directly.
+    const msg = document.createElement('button');
+    msg.type = 'button';
+    msg.className = 'msg';
+    msg.textContent = entry.message;
+    msg.setAttribute('aria-label', 'Actions for ' + entry.message);
+    head.appendChild(msg);
+
+    const msgPop = document.createElement('div');
+    msgPop.className = 'pop';
+    head.appendChild(msgPop);
+
+    attachPop(msg, msgPop, () => titleActions(entry.message, entry));
+
+    function setOpen(isOpen) {
+      row.classList.toggle('open', isOpen);
+      twist.textContent = isOpen ? '\\u25be' : '\\u25b8';
+      twist.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      if (isOpen) { openIds.add(entry.id); } else { openIds.delete(entry.id); }
+    }
+
+    setOpen(openIds.has(entry.id));
+
+    twist.addEventListener('click', (event) => {
+      // The head's own handler would immediately toggle it back.
+      if (event && event.stopPropagation) { event.stopPropagation(); }
+      setOpen(!row.classList.contains('open'));
+    });
+    head.addEventListener('click', () => setOpen(!row.classList.contains('open')));
+    row.appendChild(head);
+
+    const detail = document.createElement('div');
+    detail.className = 'detail';
+    const list = document.createElement('dl');
+
+    if (entry.rawTimestamp) {
+      addField(list, 'timestamp', entry.rawTimestamp, false);
+    }
+    for (const field of entry.fields) {
+      addField(list, field.key, field.value, true);
+    }
+    if (entry.fields.length === 0) {
+      addField(list, '(no fields)', '', false);
+    }
+
+    detail.appendChild(list);
+    row.appendChild(detail);
+    return row;
+  }
+
+  function renderFlat() {
+    const body = el('body');
+    body.textContent = '';
+    payload.entries.forEach((entry, index) => body.appendChild(makeRow(entry, index)));
+    mode = 'flat';
+  }
+
+  /**
+   * Grouped view.
+   *
+   * Rebuilt from the host's group list on each filter response rather than by
+   * moving existing nodes: the open-id restore in makeRow already makes a
+   * rebuild lossless, and node-moving would need its own correctness argument
+   * for a view that is off by default.
+   */
+  function renderGroups(groups) {
+    const body = el('body');
+    body.textContent = '';
+
+    for (const group of groups) {
+      const node = document.createElement('div');
+      node.className = 'entry group';
+      node.dataset.key = group.message;
+
+      const head = document.createElement('div');
+      head.className = 'head';
+
+      const twist = document.createElement('span');
+      twist.className = 'twist';
+      head.appendChild(twist);
+
+      const sev = document.createElement('span');
+      sev.className = 'sev chip ' + (group.level || 'muted');
+      sev.textContent = group.severity;
+      head.appendChild(sev);
+
+      const title = document.createElement('button');
+      title.type = 'button';
+      title.className = 'msg';
+      title.textContent = group.message;
+      title.setAttribute('aria-label', 'Actions for ' + group.message);
+      head.appendChild(title);
+
+      const pop = document.createElement('div');
+      pop.className = 'pop';
+      head.appendChild(pop);
+      attachPop(title, pop, () => titleActions(group.message, null));
+
+      const count = document.createElement('span');
+      count.className = 'kv groupCount';
+      count.textContent = String(group.indices.length);
+      head.appendChild(count);
+
+      const latest = document.createElement('span');
+      latest.className = 'ts';
+      latest.textContent = group.latest;
+      head.appendChild(latest);
+
+      const isOpen = openGroups.has(group.message);
+      if (isOpen) { node.classList.add('open'); }
+      twist.textContent = isOpen ? '\\u25be' : '\\u25b8';
+
+      head.addEventListener('click', () => {
+        const nowOpen = node.classList.toggle('open');
+        twist.textContent = nowOpen ? '\\u25be' : '\\u25b8';
+        if (nowOpen) { openGroups.add(group.message); } else { openGroups.delete(group.message); }
+      });
+      node.appendChild(head);
+
+      const detail = document.createElement('div');
+      detail.className = 'detail';
+      for (const index of group.indices) {
+        detail.appendChild(makeRow(payload.entries[index], index));
+      }
+      node.appendChild(detail);
+      body.appendChild(node);
+    }
+
+    mode = 'group';
+  }
+
   function renderEntries() {
     // Wipe detaches any open .pop; clear the pointer first so openPop cannot go stale.
     closePop();
@@ -425,71 +642,7 @@ export const LOGS_SCRIPT = `
       return;
     }
 
-    payload.entries.forEach((entry, index) => {
-      const row = document.createElement('div');
-      row.className = 'entry';
-      row.dataset.id = entry.id;
-      row.dataset.index = String(index);
-
-      const head = document.createElement('div');
-      head.className = 'head';
-
-      const twist = document.createElement('span');
-      twist.className = 'twist';
-      twist.textContent = '\\u25b8';
-      head.appendChild(twist);
-
-      const ts = document.createElement('span');
-      ts.className = 'ts';
-      ts.textContent = entry.timestamp;
-      head.appendChild(ts);
-
-      if (entry.severity) {
-        const sev = document.createElement('span');
-        sev.className = 'sev chip ' + (entry.level || 'muted');
-        sev.textContent = entry.severity;
-        head.appendChild(sev);
-      }
-
-      // The message is the title, and the one thing worth acting on directly.
-      const msg = document.createElement('button');
-      msg.type = 'button';
-      msg.className = 'msg';
-      msg.textContent = entry.message;
-      msg.setAttribute('aria-label', 'Actions for ' + entry.message);
-      head.appendChild(msg);
-
-      const msgPop = document.createElement('div');
-      msgPop.className = 'pop';
-      head.appendChild(msgPop);
-
-      attachPop(msg, msgPop, () => titleActions(entry.message, entry));
-
-      head.addEventListener('click', () => {
-        const open = row.classList.toggle('open');
-        twist.textContent = open ? '\\u25be' : '\\u25b8';
-      });
-      row.appendChild(head);
-
-      const detail = document.createElement('div');
-      detail.className = 'detail';
-      const list = document.createElement('dl');
-
-      if (entry.rawTimestamp) {
-        addField(list, 'timestamp', entry.rawTimestamp, false);
-      }
-      for (const field of entry.fields) {
-        addField(list, field.key, field.value, true);
-      }
-      if (entry.fields.length === 0) {
-        addField(list, '(no fields)', '', false);
-      }
-
-      detail.appendChild(list);
-      row.appendChild(detail);
-      body.appendChild(row);
-    });
-
+    renderFlat();
     requestFilter();
   }
 
@@ -549,7 +702,19 @@ export const LOGS_SCRIPT = `
     list.appendChild(dd);
   }
 
-  function applyVisible(indices, total) {
+  function applyVisible(indices, total, groups) {
+    if (groups) {
+      renderGroups(groups);
+      el('count').textContent =
+        groups.length + (groups.length === 1 ? ' group · ' : ' groups · ') +
+        indices.length + (indices.length === 1 ? ' entry' : ' entries');
+      return;
+    }
+
+    // Leaving grouped mode: the body holds group nodes, so rebuild it before
+    // the show/hide pass, which only toggles classes.
+    if (mode === 'group') { renderFlat(); }
+
     const keep = new Set(indices);
     for (const row of document.querySelectorAll('.entry')) {
       row.classList.toggle('hidden', !keep.has(Number(row.dataset.index)));
@@ -576,24 +741,42 @@ export const LOGS_SCRIPT = `
     liveStatus();
     sevChips();
     renderEntries();
+
+    if (payload.merged) {
+      // A merge, not a new page: keep the reader where they were, or follow if
+      // they are already at the newest entry.
+      if (follow) {
+        toTop();
+      } else {
+        pending += payload.added || 0;
+        updateBackTop();
+      }
+    } else {
+      pending = 0;
+      follow = true;
+      updateBackTop();
+    }
+  }
+
+  function setAll(isOpen) {
+    for (const row of document.querySelectorAll('.entry')) {
+      row.classList.toggle('open', isOpen);
+      const twist = row.querySelector('.twist');
+      if (twist) {
+        twist.textContent = isOpen ? '\\u25be' : '\\u25b8';
+        twist.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      }
+      if (!row.dataset.id) { continue; }
+      if (isOpen) { openIds.add(row.dataset.id); } else { openIds.delete(row.dataset.id); }
+    }
   }
 
   el('include').addEventListener('input', requestFilterSoon);
   el('exclude').addEventListener('input', requestFilterSoon);
   el('caseSensitive').addEventListener('change', requestFilter);
   el('refresh').addEventListener('click', apply);
-  el('expandAll').addEventListener('click', () => {
-    for (const row of document.querySelectorAll('.entry')) {
-      row.classList.add('open');
-      row.querySelector('.twist').textContent = '\\u25be';
-    }
-  });
-  el('collapseAll').addEventListener('click', () => {
-    for (const row of document.querySelectorAll('.entry')) {
-      row.classList.remove('open');
-      row.querySelector('.twist').textContent = '\\u25b8';
-    }
-  });
+  el('expandAll').addEventListener('click', () => setAll(true));
+  el('collapseAll').addEventListener('click', () => setAll(false));
   el('live').addEventListener('change', () => {
     liveOn = el('live').checked;
     // The host owns the timer: it has the panel's visibility, the in-flight flag
@@ -621,7 +804,7 @@ export const LOGS_SCRIPT = `
       payload = data.payload;
       render();
     } else if (data.type === 'visible') {
-      applyVisible(data.indices, data.total);
+      applyVisible(data.indices, data.total, data.groups);
     } else if (data.type === 'copied') {
       setStatus(data.error ? 'Copy failed: ' + data.error : data.label + ' copied');
     }
