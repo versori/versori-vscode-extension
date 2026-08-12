@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import { LogEntry, toLogEntries } from './entries';
-import { EMPTY_FILTER, matchesEntry, parseTerms, visibleIndices } from './filter';
+import {
+    appendExpression,
+    EMPTY_FILTER,
+    fieldExpression,
+    fieldPrefixExpression,
+    matchesEntry,
+    messageExpression,
+    parseExpression,
+    splitExpressions,
+    visibleIndices,
+} from './filter';
 
 const entries = toLogEntries([
     {
@@ -37,27 +47,157 @@ const completed = byMessage('DurableInterpreter.executionCompleted');
 const heartbeat = byMessage('heartbeat');
 const refused = byMessage('connect ECONNREFUSED');
 
-describe('parseTerms', () => {
-    it('splits on commas so several noisy messages can be excluded at once', () => {
-        expect(parseTerms('heartbeat, DurableInterpreter')).toEqual([
+describe('splitExpressions', () => {
+    it('splits on commas, so several noisy messages can be excluded at once', () => {
+        expect(splitExpressions('heartbeat, DurableInterpreter')).toEqual([
             'heartbeat',
             'DurableInterpreter',
         ]);
     });
 
-    it('splits on newlines too, for pasted lists', () => {
-        expect(parseTerms('heartbeat\nDurableInterpreter')).toEqual([
+    it('splits on newlines, which is what the action menus append', () => {
+        expect(splitExpressions('heartbeat\nDurableInterpreter')).toEqual([
             'heartbeat',
             'DurableInterpreter',
         ]);
     });
 
-    it('drops empty segments, so a trailing comma is harmless', () => {
-        expect(parseTerms('heartbeat,,  ,')).toEqual(['heartbeat']);
+    it('does not split on a comma inside a quoted value, so a generated expression round-trips', () => {
+        expect(splitExpressions('message="Error fetching orders, retrying"')).toEqual([
+            'message="Error fetching orders, retrying"',
+        ]);
+    });
+
+    it('still splits on a newline between two quoted expressions', () => {
+        expect(splitExpressions('message="a, b"\nmessage="c"')).toEqual([
+            'message="a, b"',
+            'message="c"',
+        ]);
+    });
+
+    it('drops blanks, so a trailing comma is harmless', () => {
+        expect(splitExpressions('heartbeat,,  ,')).toEqual(['heartbeat']);
+    });
+
+    it('drops exact duplicates, keeping the first, so clicking Include twice is idempotent', () => {
+        expect(splitExpressions('heartbeat\nfoo\nheartbeat')).toEqual(['heartbeat', 'foo']);
     });
 
     it('returns nothing for blank input', () => {
-        expect(parseTerms('   ')).toEqual([]);
+        expect(splitExpressions('   ')).toEqual([]);
+    });
+});
+
+describe('parseExpression', () => {
+    it('reads bare text as an anywhere substring', () => {
+        expect(parseExpression('get-pricing')).toEqual({ kind: 'text', value: 'get-pricing' });
+    });
+
+    it('reads an exact message', () => {
+        expect(parseExpression('message="Error fetching workflows"')).toEqual({
+            kind: 'message',
+            value: 'Error fetching workflows',
+            prefix: false,
+        });
+    });
+
+    it('reads a message prefix', () => {
+        expect(parseExpression('message^="Error fetching"')).toEqual({
+            kind: 'message',
+            value: 'Error fetching',
+            prefix: true,
+        });
+    });
+
+    it('reads an exact field value at a path', () => {
+        expect(parseExpression('fields.executionId="01ABC"')).toEqual({
+            kind: 'field',
+            path: 'fields.executionId',
+            value: '01ABC',
+            prefix: false,
+        });
+    });
+
+    it('reads a field value prefix', () => {
+        expect(parseExpression('fields.route^="/orders/"')).toEqual({
+            kind: 'field',
+            path: 'fields.route',
+            value: '/orders/',
+            prefix: true,
+        });
+    });
+
+    it('reads a field-path prefix', () => {
+        expect(parseExpression('fields.error.*')).toEqual({
+            kind: 'fieldPrefix',
+            path: 'fields.error',
+        });
+    });
+
+    it('accepts an unquoted value, so hand-typing is not punished', () => {
+        expect(parseExpression('fields.name=default')).toEqual({
+            kind: 'field',
+            path: 'fields.name',
+            value: 'default',
+            prefix: false,
+        });
+    });
+
+    it('unescapes a quoted value, so quotes and newlines round-trip through a menu action', () => {
+        expect(parseExpression('message="say \\"hi\\""')).toEqual({
+            kind: 'message',
+            value: 'say "hi"',
+            prefix: false,
+        });
+    });
+
+    it('falls back to plain text for a half-typed expression rather than hiding every row', () => {
+        expect(parseExpression('message=')).toEqual({ kind: 'text', value: 'message=' });
+        expect(parseExpression('message="unterminated')).toEqual({
+            kind: 'text',
+            value: 'message="unterminated',
+        });
+    });
+});
+
+describe('expression serialisation', () => {
+    it('quotes a message so punctuation, commas and quotes survive a round-trip', () => {
+        const text = messageExpression('Error, "really": failed');
+        expect(parseExpression(text)).toEqual({
+            kind: 'message',
+            value: 'Error, "really": failed',
+            prefix: false,
+        });
+    });
+
+    it('marks a prefix expression with ^=', () => {
+        expect(messageExpression('Error fetching', true)).toBe('message^="Error fetching"');
+        expect(fieldExpression('fields.route', '/orders/', true)).toBe('fields.route^="/orders/"');
+    });
+
+    it('writes a field-path prefix as path.*', () => {
+        expect(fieldPrefixExpression('fields.error')).toBe('fields.error.*');
+    });
+});
+
+describe('appendExpression', () => {
+    it('appends on a new line, preserving what the user typed', () => {
+        expect(appendExpression('heartbeat', 'message="boom"')).toBe('heartbeat\nmessage="boom"');
+    });
+
+    it('is a no-op when the expression is already there, so clicking twice does not duplicate it', () => {
+        expect(appendExpression('heartbeat\nmessage="boom"', 'message="boom"')).toBe(
+            'heartbeat\nmessage="boom"',
+        );
+    });
+
+    it('starts a fresh box without a leading newline', () => {
+        expect(appendExpression('', 'message="boom"')).toBe('message="boom"');
+        expect(appendExpression('  \n', 'message="boom"')).toBe('message="boom"');
+    });
+
+    it('recognises a duplicate typed with a trailing comma', () => {
+        expect(appendExpression('message="boom",', 'message="boom"')).toBe('message="boom",');
     });
 });
 
