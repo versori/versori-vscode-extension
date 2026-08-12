@@ -98,10 +98,24 @@ failure is at the top.
 
 - **Search (server-side)** is passed to `projects logs --search`, so it narrows what is fetched
 - **Include** and **Exclude** filter the fetched page client-side. The CLI has no exclude flag,
-  which is why exclusion happens here. Both accept comma-separated alternatives, and there is a
-  case-sensitivity toggle
+  which is why exclusion happens here. Each box takes any number of alternatives, one per line
+  (commas still work), and there is a case-sensitivity toggle. As well as plain text — which
+  matches anywhere in an entry, including field *names* — they accept scoped forms:
+  `message="exact title"`, `message^="title prefix"`, `fields.executionId="01ABC"`,
+  `fields.route^="/orders/"`, and `fields.error.*` for "has any field under this path"
+- **Clicking a message title, field name or field value** opens a menu that copies it or appends
+  the matching exact/prefix expression to Include or Exclude, so a filter never has to be typed
+  from memory. **Copy JSON** copies that one entry, redacted, as formatted JSON
 - **Severity chips** toggle levels; the set is derived from the data, not hardcoded
-- **Fields** picks which field values appear inline in each headline, also derived from the data
+- **Live logs** polls every 10 seconds, merging only entries the page does not already hold —
+  repeated log lines are preserved as separate entries, and the page stays bounded by **Limit**.
+  It follows new entries only while you are parked at the top; scroll down and a
+  `N new logs · Back to top` control accumulates instead of moving the view under you. A failed
+  poll leaves the page alone and retries. Live mode needs a relative time range, since a custom
+  absolute window does not advance
+- **Group by title** collapses the visible entries into one row per exact message, showing the
+  worst severity present, the instance count and the latest time. Each instance stays
+  independently expandable
 - **Expand all** / **Collapse all** for the field detail under each entry
 
 ### Issues
