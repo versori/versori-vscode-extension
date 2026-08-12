@@ -240,17 +240,37 @@ export const LOGS_SCRIPT = `
   /**
    * Append to a filter box without disturbing what is already there.
    *
-   * The duplicate check is a plain scan of the trimmed lines and commas — the
-   * host's splitExpressions is the authority, and this only needs to stop the
-   * same menu action stacking up when clicked twice.
+   * Duplicate check mirrors the host's splitExpressions rule: a comma inside a
+   * double-quoted value does NOT separate; a newline always does. A naive
+   * .split(/[\\n,]/) would cut inside message="a,b" and stack the same Include
+   * twice — the brief's own "stop stacking on double-click" goal.
    */
   function addExpression(id, expression) {
     const input = el(id);
-    const existing = input.value.replace(/\\s+$/, '');
-    const already = existing
-      .split(/[\\n,]/)
-      .map((part) => part.trim())
-      .indexOf(expression) !== -1;
+    const source = input.value;
+    const existing = source.replace(/\\s+$/, '');
+    // Quote-aware scan — cannot import filter.ts from this template-literal script.
+    const parts = [];
+    let current = '';
+    let quoted = false;
+    for (let i = 0; i < source.length; i++) {
+      const ch = source[i];
+      if (ch === '"' && source[i - 1] !== '\\\\') {
+        quoted = !quoted;
+        current += ch;
+        continue;
+      }
+      if (ch === '\\n' || (ch === ',' && !quoted)) {
+        const token = current.trim();
+        current = '';
+        if (token) { parts.push(token); }
+        continue;
+      }
+      current += ch;
+    }
+    const last = current.trim();
+    if (last) { parts.push(last); }
+    const already = parts.indexOf(expression) !== -1;
 
     if (!already) {
       input.value = existing ? existing + '\\n' + expression : expression;
@@ -382,6 +402,8 @@ export const LOGS_SCRIPT = `
   }
 
   function renderEntries() {
+    // Wipe detaches any open .pop; clear the pointer first so openPop cannot go stale.
+    closePop();
     const body = el('body');
     body.textContent = '';
 

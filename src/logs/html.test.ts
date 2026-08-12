@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { RAW_PANE_SCRIPT } from '../webview/shell';
-import { fieldExpression, fieldPrefixExpression, messageExpression } from './filter';
+import {
+    appendExpression,
+    fieldExpression,
+    fieldPrefixExpression,
+    messageExpression,
+} from './filter';
 import { LOGS_SCRIPT, renderLogsHtml } from './html';
 
 /**
@@ -617,9 +622,13 @@ describe('row title actions (executed)', () => {
     it('reports a failed copy without clearing the popover state', () => {
         const view = harness();
         view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        expect(view.popoverLabels().length).toBeGreaterThan(0);
+
         view.receive({ type: 'copied', label: 'Message', error: 'clipboard unavailable' });
 
         expect(view.node('status').textContent).toContain('clipboard unavailable');
+        expect(view.popoverLabels().length).toBeGreaterThan(0);
     });
 
     it('closes the popover after an action, so the row is readable again', () => {
@@ -719,5 +728,40 @@ describe('inline webview serialisers match filter.ts (executed)', () => {
         view.fieldNameButton(0, path).fire('click');
         view.clickPopover('Include field prefix');
         expect(view.node('include').value).toBe(fieldPrefixExpression(path));
+    });
+
+    it('does not stack a duplicate Include when the value contains a comma', () => {
+        const message = 'a,b';
+        const fieldValue = 'x,y';
+        const path = 'fields.triggerName';
+        const view = harness();
+        const payload = payloadWith(['info']);
+        payload.entries[0]!.message = message;
+        payload.entries[0]!.fields = [{ key: path, value: fieldValue }];
+        view.sendLogs(payload);
+
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+        const messageBox = view.node('include').value;
+        expect(messageBox).toBe(messageExpression(message));
+        expect(messageBox).toBe(
+            appendExpression(appendExpression('', messageExpression(message)), messageExpression(message)),
+        );
+
+        view.node('include').value = '';
+        view.fieldValueButton(0, path).fire('click');
+        view.clickPopover('Include');
+        view.fieldValueButton(0, path).fire('click');
+        view.clickPopover('Include');
+        const fieldBox = view.node('include').value;
+        expect(fieldBox).toBe(fieldExpression(path, fieldValue));
+        expect(fieldBox).toBe(
+            appendExpression(
+                appendExpression('', fieldExpression(path, fieldValue)),
+                fieldExpression(path, fieldValue),
+            ),
+        );
     });
 });
