@@ -35,14 +35,14 @@ export function mergeEntries(
         held.set(entry.digest, (held.get(entry.digest) ?? 0) + 1);
     }
 
-    // Walk oldest-first so that when a response holds more occurrences of a
-    // digest than are held, the ones kept are the newest — the surplus belongs at
-    // the top of the page, not buried under entries it predates.
     const budget = new Map<string, number>();
     for (const entry of incoming) {
         budget.set(entry.digest, (budget.get(entry.digest) ?? 0) + 1);
     }
 
+    // Walk newest-first (incoming is already newest-first) so surplus picks are
+    // the newest occurrences — those belong at the top of the page; oldest-first
+    // would keep the stale end of the surplus and bury fresher lines below it.
     const fresh: LogEntry[] = [];
     for (const entry of incoming) {
         const surplus = (budget.get(entry.digest) ?? 0) - (held.get(entry.digest) ?? 0);

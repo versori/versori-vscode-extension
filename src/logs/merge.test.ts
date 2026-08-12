@@ -46,6 +46,9 @@ describe('mergeEntries', () => {
 
         expect(result.entries).toHaveLength(2);
         expect(result.added).toBe(1);
+        // Same digest/message — only object identity shows the surplus was prepended.
+        expect(result.entries[0]).toBe(both[0]);
+        expect(result.entries[1]).toBe(held[0]);
     });
 
     it('trims to the limit from the oldest end, so a long live session stays bounded', () => {
