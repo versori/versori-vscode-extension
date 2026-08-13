@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { findCli } from './cli';
 import { showMenu } from './commands/menu';
 import { FormDeps, openDeployForm, openSaveVersionForm } from './forms/panel';
+import { KeybindingStore } from './keybindings/store';
 import { PopupSession } from './forms/popup';
 import { LocalContextResolver } from './resolver/local';
 import { ContextResolver, EMPTY_STATE, ResolvedState } from './resolver/types';
@@ -22,6 +23,9 @@ const CONTEXT_SAVE_COMMAND = 'versori.saveVersion';
 export function activate(context: vscode.ExtensionContext): void {
     const output = vscode.window.createOutputChannel('Versori');
     context.subscriptions.push(output);
+
+    const keybindings = new KeybindingStore(context.globalStorageUri.fsPath);
+    const chordFor = (command: string): string | undefined => keybindings.chordFor(command);
 
     const resolver: ContextResolver = new LocalContextResolver({
         log: (message) => output.appendLine(message),
@@ -49,6 +53,7 @@ export function activate(context: vscode.ExtensionContext): void {
     };
 
     const refresh = (): void => {
+        keybindings.refresh();
         const bin = cliPath();
         if (!bin) {
             const configured = vscode.workspace
@@ -79,12 +84,14 @@ export function activate(context: vscode.ExtensionContext): void {
                 return;
             }
 
+            keybindings.refresh();
             await showMenu({
                 bin,
                 state: lastState,
                 output,
                 onContextChanged: invalidateAndRefresh,
                 getState: () => lastState,
+                chordFor,
             });
         }),
     );
