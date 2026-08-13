@@ -171,6 +171,36 @@ Editing resources through this extension always re-sends `--max-replicas`, becau
 means editing resources through the extension preserves autoscaling, while editing the same
 environment with a hand-typed CLI command that omits `--max-replicas` may turn it off.
 
+## Keyboard shortcuts
+
+Every menu action is a command, so all of them can be bound to a key. The extension ships
+**no default shortcuts** — nothing is taken from your keymap until you choose it.
+
+To bind one, open the Versori menu and pick **Configure keyboard shortcuts** (the last row,
+always present). That opens VS Code's Keyboard Shortcuts editor filtered to `versori.`, listing
+every action including **Versori: Show Menu**. You can also reach them all from the Command
+Palette by typing `Versori:`.
+
+Once bound, the chord is shown next to its action:
+
+- in the menu, after the row's description — `Deploy...  dry run by default · ⌘⇧D`
+- on the status bar tooltip and the Activity Bar launcher, for **Show Menu** only
+
+Chords are read from your `keybindings.json` when the menu opens, so binding a key and
+reopening the menu is enough — no window reload.
+
+Two limitations worth knowing:
+
+- A binding with a `when` clause is shown as if it always applies. The extension reads the
+  keymap file and cannot evaluate `when`.
+- Over Remote SSH, the keymap that is read is the **remote** one, which may not be where your
+  shortcuts live. The actions still work; only the displayed chord may be missing or wrong.
+
+Invoked from the keyboard or the Command Palette, an action targets the file you are looking at
+— the same project the status bar names. Deploy, Sync, and Save version invoked from the
+Explorer's right-click menu target the folder you clicked instead. A project action with no
+synced project reports that rather than picking one for you.
+
 ## Setup
 
 ```sh
