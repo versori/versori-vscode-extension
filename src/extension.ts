@@ -4,7 +4,14 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import { findCli } from './cli';
-import { showMenu } from './commands/menu';
+import {
+    MENU_ACTIONS,
+    MenuAction,
+    MenuDeps,
+    actionFor,
+    reportError,
+    showMenu,
+} from './commands/menu';
 import { FormDeps, openDeployForm, openSaveVersionForm } from './forms/panel';
 import { KeybindingStore } from './keybindings/store';
 import { PopupSession } from './forms/popup';
@@ -96,12 +103,77 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
     );
 
-    context.subscriptions.push(
-        vscode.commands.registerCommand('versori.showOutput', () => output.show(true)),
-    );
+    /** Everything a menu action needs when it is run as a command. */
+    const menuDeps = (bin: string): MenuDeps => ({
+        bin,
+        state: lastState,
+        output,
+        onContextChanged: invalidateAndRefresh,
+        getState: () => lastState,
+        chordFor,
+    });
+
+    /**
+     * Run a menu action outside the popup.
+     *
+     * Scope is `lastState` — the file the user is looking at — which is exactly
+     * what the popup would have used. A project action with no project says so
+     * rather than guessing one.
+     */
+    const runAction = async (action: MenuAction): Promise<void> => {
+        const bin = cliPath();
+        if (!bin) {
+            await promptForCliPath();
+            return;
+        }
+
+        keybindings.refresh();
+
+        const popup = new PopupSession();
+        try {
+            if (action.needsProject && !(lastState.projectId && lastState.projectDir)) {
+                await showContextMessage(
+                    popup,
+                    action.title,
+                    '$(info) No synced project for this file',
+                    'Open a file inside a directory containing a .versori to enable project actions.',
+                );
+                return;
+            }
+
+            await action.run(menuDeps(bin), popup);
+        } catch (err) {
+            popup.close();
+            await reportError(output, err);
+        } finally {
+            popup.dispose();
+        }
+    };
+
+    // Explorer entries own their own registration below: they take a folder Uri.
+    const EXPLORER_COMMANDS = new Set([
+        CONTEXT_SYNC_COMMAND,
+        CONTEXT_DEPLOY_COMMAND,
+        CONTEXT_SAVE_COMMAND,
+    ]);
+
+    for (const action of MENU_ACTIONS) {
+        if (EXPLORER_COMMANDS.has(action.command)) {
+            continue;
+        }
+        context.subscriptions.push(
+            vscode.commands.registerCommand(action.command, () => runAction(action)),
+        );
+    }
 
     context.subscriptions.push(
-        vscode.commands.registerCommand(CONTEXT_SYNC_COMMAND, async (uri: vscode.Uri) => {
+        vscode.commands.registerCommand(CONTEXT_SYNC_COMMAND, async (uri?: vscode.Uri) => {
+            if (!uri) {
+                // Keyboard or Palette: same scope the popup would have used.
+                await runAction(actionFor(CONTEXT_SYNC_COMMAND)!);
+                return;
+            }
+
             const bin = cliPath();
             if (!bin) {
                 await promptForCliPath();
@@ -139,26 +211,34 @@ export function activate(context: vscode.ExtensionContext): void {
                 popup.dispose();
             }
         }),
-        vscode.commands.registerCommand(CONTEXT_DEPLOY_COMMAND, (uri: vscode.Uri) =>
-            runProjectContextForm(
+        vscode.commands.registerCommand(CONTEXT_DEPLOY_COMMAND, async (uri?: vscode.Uri) => {
+            if (!uri) {
+                await runAction(actionFor(CONTEXT_DEPLOY_COMMAND)!);
+                return;
+            }
+            await runProjectContextForm(
                 uri,
                 'Deploy project',
                 openDeployForm,
                 cliPath,
                 resolver,
                 output,
-            ),
-        ),
-        vscode.commands.registerCommand(CONTEXT_SAVE_COMMAND, (uri: vscode.Uri) =>
-            runProjectContextForm(
+            );
+        }),
+        vscode.commands.registerCommand(CONTEXT_SAVE_COMMAND, async (uri?: vscode.Uri) => {
+            if (!uri) {
+                await runAction(actionFor(CONTEXT_SAVE_COMMAND)!);
+                return;
+            }
+            await runProjectContextForm(
                 uri,
                 'Save version',
                 openSaveVersionForm,
                 cliPath,
                 resolver,
                 output,
-            ),
-        ),
+            );
+        }),
     );
 
     // --- invalidation sources -------------------------------------------------
