@@ -103,4 +103,9 @@ describe('parseKeybindings', () => {
         expect(parseKeybindings('').size).toBe(0);
         expect(parseKeybindings('{ "key": "cmd+d" }').size).toBe(0);
     });
+
+    it('still yields a chord when the keymap starts with a UTF-8 BOM', () => {
+        const text = '\uFEFF[{ "key": "cmd+d", "command": "versori.logs" }]';
+        expect(parseKeybindings(text).get('versori.logs')).toBe('cmd+d');
+    });
 });

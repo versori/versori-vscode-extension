@@ -157,14 +157,29 @@ export function activate(context: vscode.ExtensionContext): void {
         CONTEXT_SAVE_COMMAND,
     ]);
 
+    // These two touch no CLI and must stay reachable when the binary is missing —
+    // Show Output is how the user diagnoses that state, and Configure is the only
+    // way to reach the Keybindings editor once versori.showMenu has bailed.
+    const CLI_FREE_COMMANDS = new Set([
+        'versori.showOutput',
+        'versori.configureKeybindings',
+    ]);
+
     for (const action of MENU_ACTIONS) {
-        if (EXPLORER_COMMANDS.has(action.command)) {
+        if (EXPLORER_COMMANDS.has(action.command) || CLI_FREE_COMMANDS.has(action.command)) {
             continue;
         }
         context.subscriptions.push(
             vscode.commands.registerCommand(action.command, () => runAction(action)),
         );
     }
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('versori.showOutput', () => output.show(true)),
+        vscode.commands.registerCommand('versori.configureKeybindings', () =>
+            vscode.commands.executeCommand('workbench.action.openGlobalKeybindings', 'versori.'),
+        ),
+    );
 
     context.subscriptions.push(
         vscode.commands.registerCommand(CONTEXT_SYNC_COMMAND, async (uri?: vscode.Uri) => {

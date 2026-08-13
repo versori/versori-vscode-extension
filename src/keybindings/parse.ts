@@ -89,6 +89,7 @@ export function parseKeybindings(
     prefix: string = DEFAULT_PREFIX,
 ): Map<string, string> {
     const chords = new Map<string, string>();
+    text = text.replace(/^\uFEFF/, '');
 
     let parsed: unknown;
     try {
