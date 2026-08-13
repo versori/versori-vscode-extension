@@ -15,7 +15,10 @@ const ERROR_BG = new vscode.ThemeColor('statusBarItem.errorBackground');
 export class VersoriStatusBar implements vscode.Disposable {
     private readonly item: vscode.StatusBarItem;
 
-    constructor(commandId: string) {
+    constructor(
+        commandId: string,
+        private readonly menuChord: () => string | undefined,
+    ) {
         this.item = vscode.window.createStatusBarItem(
             'versori.context',
             vscode.StatusBarAlignment.Right,
@@ -30,7 +33,7 @@ export class VersoriStatusBar implements vscode.Disposable {
     renderCliMissing(configuredPath: string | undefined): void {
         this.item.text = '$(error) Versori: CLI not found';
         this.item.backgroundColor = ERROR_BG;
-        this.item.tooltip = markdown([
+        this.item.tooltip = this.markdown([
             '**Versori CLI not found**',
             '',
             configuredPath
@@ -48,7 +51,7 @@ export class VersoriStatusBar implements vscode.Disposable {
         if (state.source === 'none') {
             this.item.text = '$(plug) Versori: no context';
             this.item.backgroundColor = WARNING_BG;
-            this.item.tooltip = markdown([
+            this.item.tooltip = this.markdown([
                 '**No Versori context configured**',
                 '',
                 'Run `versori context add --name <name> --organisation <id> --jwt <jwt>`.',
@@ -66,7 +69,7 @@ export class VersoriStatusBar implements vscode.Disposable {
             // The case the CLI only mentions once, on stderr. Make it unmissable.
             this.item.text = `$(alert) ${label}`;
             this.item.backgroundColor = WARNING_BG;
-            this.item.tooltip = markdown([
+            this.item.tooltip = this.markdown([
                 '**Context overridden by `.versori`**',
                 '',
                 `Commands here run under **${state.contextName}**, pinned by the project’s \`.versori\`.`,
@@ -79,7 +82,7 @@ export class VersoriStatusBar implements vscode.Disposable {
 
         this.item.text = `$(plug) ${label}`;
         this.item.backgroundColor = undefined;
-        this.item.tooltip = markdown(
+        this.item.tooltip = this.markdown(
             state.source === 'versori-file'
                 ? [
                       `**Context:** ${state.contextName} (from \`.versori\`)`,
@@ -96,6 +99,19 @@ export class VersoriStatusBar implements vscode.Disposable {
         );
     }
 
+    /**
+     * Tooltip body, with the open-menu chord as a final line when the user has
+     * bound one. Every tooltip goes through here, so no surface can drift.
+     */
+    private markdown(lines: string[]): vscode.MarkdownString {
+        const chord = this.menuChord();
+        const body = chord ? [...lines, '', `Shortcut: ${chord}`] : lines;
+
+        const md = new vscode.MarkdownString(body.join('\n'));
+        md.isTrusted = false;
+        return md;
+    }
+
     dispose(): void {
         this.item.dispose();
     }
@@ -106,10 +122,4 @@ function projectLines(state: ResolvedState): string[] {
         return [];
     }
     return [`**Project:** \`${state.projectId}\``, `**Directory:** \`${state.projectDir}\``];
-}
-
-function markdown(lines: string[]): vscode.MarkdownString {
-    const md = new vscode.MarkdownString(lines.join('\n'));
-    md.isTrusted = false;
-    return md;
 }

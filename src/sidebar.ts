@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import { ResolvedState } from './resolver/types';
+import { appendChord } from './keybindings/format';
 
 type SidebarItem = vscode.TreeItem;
 
@@ -20,6 +21,7 @@ export class VersoriSidebar implements vscode.TreeDataProvider<SidebarItem>, vsc
     constructor(
         private readonly menuCommand: string,
         private readonly getState: () => ResolvedState,
+        private readonly menuChord: () => string | undefined,
     ) {}
 
     refresh(): void {
@@ -45,7 +47,7 @@ export class VersoriSidebar implements vscode.TreeDataProvider<SidebarItem>, vsc
             command: this.menuCommand,
             title: 'Versori: Show Menu',
         };
-        item.description = sidebarDescription(state);
+        item.description = appendChord(sidebarDescription(state), this.menuChord());
         item.tooltip = sidebarTooltip(state);
         return [item];
     }

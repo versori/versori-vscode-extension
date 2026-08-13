@@ -38,14 +38,14 @@ export function activate(context: vscode.ExtensionContext): void {
         log: (message) => output.appendLine(message),
     });
 
-    const statusBar = new VersoriStatusBar(MENU_COMMAND);
+    const statusBar = new VersoriStatusBar(MENU_COMMAND, () => chordFor(MENU_COMMAND));
     context.subscriptions.push(statusBar);
 
     // The directory currently being reported on, so the bar does not blank when
     // focus moves to a terminal. Never holds a resolved result — see Scope.
     let lastScope: Scope | undefined;
     let lastState: ResolvedState = EMPTY_STATE;
-    const sidebar = new VersoriSidebar(MENU_COMMAND, () => lastState);
+    const sidebar = new VersoriSidebar(MENU_COMMAND, () => lastState, () => chordFor(MENU_COMMAND));
     context.subscriptions.push(
         sidebar,
         vscode.window.registerTreeDataProvider('versori.menu', sidebar),
