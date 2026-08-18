@@ -48,8 +48,10 @@ export interface ActivationDetail {
     externalId: string;
     displayName: string;
     connections: RedactedConnection[];
-    /** Keys only — values are never surfaced (may contain secrets). */
+    /** Keys only — values never shown in the list summary. */
     variableNames: string[];
+    /** Current values for the configuration editor (stringified). */
+    variableValues: Record<string, string>;
     /** Fully redacted JSON for the raw pane. */
     redacted: unknown;
 }
@@ -250,10 +252,8 @@ export function toActivationDetail(raw: unknown): ActivationDetail | undefined {
         .map(redactConnection);
 
     const variables = record.dynamicVariables ?? record.DynamicVariables;
-    const variableNames =
-        variables && typeof variables === 'object' && !Array.isArray(variables)
-            ? Object.keys(variables as Record<string, unknown>).sort()
-            : [];
+    const variableValues = stringifyVariableBag(variables);
+    const variableNames = Object.keys(variableValues).sort();
 
     return {
         id,
@@ -261,7 +261,98 @@ export function toActivationDetail(raw: unknown): ActivationDetail | undefined {
         displayName,
         connections,
         variableNames,
+        variableValues,
         redacted: redact(stripCredentialBags(record)),
+    };
+}
+
+/**
+ * When `activations details` omitted connections (older CLI, or GET
+ * activation treated a connection-load failure as non-fatal), fill them from
+ * `connections list --end-user` — the same fallback the web Users tab uses.
+ */
+export function withFallbackConnections(
+    detail: ActivationDetail,
+    fallbackRaw: unknown,
+): ActivationDetail {
+    if (detail.connections.length > 0) {
+        return detail;
+    }
+    const fallback = toConnectionRows(fallbackRaw);
+    if (fallback.length === 0) {
+        return detail;
+    }
+    return {
+        ...detail,
+        connections: fallback.map((row) => ({
+            id: row.id,
+            name: row.name,
+            systemId: row.systemId,
+            templateId: row.templateId,
+            baseUrl: row.baseUrl,
+        })),
+    };
+}
+
+export function stringifyVariableValue(value: unknown): string {
+    if (typeof value === 'string') {
+        return value;
+    }
+    if (typeof value === 'boolean' || typeof value === 'number') {
+        return String(value);
+    }
+    if (value == null) {
+        return '';
+    }
+    return JSON.stringify(value);
+}
+
+function stringifyVariableBag(value: unknown): Record<string, string> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return {};
+    }
+    const out: Record<string, string> = {};
+    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+        out[key] = stringifyVariableValue(inner);
+    }
+    return out;
+}
+
+/** Currently deployed version on one environment from `projects details`. */
+export function readDeployedVersion(
+    raw: unknown,
+    environment: string,
+): { id: string; name: string } | undefined {
+    const name = environment.trim();
+    if (!raw || typeof raw !== 'object' || !name) {
+        return undefined;
+    }
+    const environments = (raw as { environments?: unknown }).environments;
+    if (!Array.isArray(environments)) {
+        return undefined;
+    }
+    const found = environments.find((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+            return false;
+        }
+        const row = item as Row;
+        return stringField(row, 'name') === name || stringField(row, 'Name') === name;
+    }) as Row | undefined;
+    if (!found) {
+        return undefined;
+    }
+    const version = found.deployedVersion ?? found.DeployedVersion;
+    if (!version || typeof version !== 'object' || Array.isArray(version)) {
+        return undefined;
+    }
+    const row = version as Row;
+    const id = stringField(row, 'id') || stringField(row, 'ID');
+    if (!id) {
+        return undefined;
+    }
+    return {
+        id,
+        name: stringField(row, 'name') || stringField(row, 'Name'),
     };
 }
 

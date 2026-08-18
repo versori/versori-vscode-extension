@@ -12,18 +12,23 @@ import {
     buildActivationDetailsArgs,
     buildActivationListArgs,
     buildConnectionsListArgs,
+    buildEndUserConnectionsListArgs,
     buildSchemaListArgs,
     buildSetVariableArgs,
     buildSystemsListArgs,
     buildUserCreateArgs,
+    buildUserDeleteArgs,
+    buildVersionsDeployArgs,
     ConnectionAssignment,
     VariableAssignment,
 } from './args';
-import { ActivationDetailMessage, ActivationsPayload, renderActivationsHtml } from './html';
+import { ActivationsPayload, SystemChoice, WorkspaceMessage, renderActivationsHtml } from './html';
 import {
+    ConnectionRow,
     encodeVariableValue,
     groupActivations,
     parseSuccessfulJson,
+    readDeployedVersion,
     SchemaVariable,
     SystemRow,
     toActivationDetail,
@@ -31,6 +36,7 @@ import {
     toConnectionRows,
     toSchemaVariables,
     toSystemRows,
+    withFallbackConnections,
 } from './rows';
 import { handleNavMessage } from '../webview/nav';
 
@@ -47,6 +53,10 @@ interface OpenPanel {
     values: ControlValues;
     deps: ActivationsDeps;
     controls: Control[];
+    selectedExternalId?: string;
+    catalogEnv?: string;
+    catalogSystems?: Promise<SystemRow[]>;
+    catalogSchema?: Promise<SchemaVariable[]>;
 }
 
 /** Single panel, so a second invocation refreshes rather than duplicating. */
@@ -88,7 +98,17 @@ export async function showActivationsPanel(
     panel.webview.html = renderActivationsHtml(crypto.randomBytes(16).toString('base64'));
 
     panel.webview.onDidReceiveMessage(
-        (message: { type?: string; controls?: ControlValues; externalId?: string; label?: string }) => {
+        (message: {
+            type?: string;
+            controls?: ControlValues;
+            externalId?: string;
+            displayName?: string;
+            userId?: string;
+            label?: string;
+            status?: 'active' | 'inactive';
+            connections?: ConnectionAssignment[];
+            variables?: VariableAssignment[];
+        }) => {
             if (handleNavMessage(message, panel)) {
                 return;
             }
@@ -100,19 +120,53 @@ export async function showActivationsPanel(
                 return;
             }
             if (message?.type === 'createUser') {
-                void createUser(entry);
+                void createUser(entry, message.displayName, message.externalId);
+                return;
+            }
+            if (message?.type === 'select' && message.externalId) {
+                void showWorkspace(entry, {
+                    externalId: message.externalId,
+                    displayName: message.label ?? message.externalId,
+                    userId: message.userId ?? '',
+                    status: message.status === 'active' ? 'active' : 'inactive',
+                });
                 return;
             }
             if (message?.type === 'activate' && message.externalId) {
-                void activateUser(entry, message.externalId, message.label ?? message.externalId);
+                void activateUser(
+                    entry,
+                    message.externalId,
+                    message.label ?? message.externalId,
+                    {
+                        connections: message.connections ?? [],
+                        variables: message.variables ?? [],
+                    },
+                );
                 return;
             }
             if (message?.type === 'deactivate' && message.externalId) {
                 void deactivateUser(entry, message.externalId, message.label ?? message.externalId);
                 return;
             }
-            if (message?.type === 'detail' && message.externalId) {
-                void showDetail(entry, message.externalId);
+            if (message?.type === 'deleteUser' && (message.userId || message.externalId)) {
+                void deleteUser(entry, {
+                    userId: message.userId ?? '',
+                    externalId: message.externalId ?? '',
+                    label: message.label ?? message.externalId ?? message.userId ?? 'user',
+                });
+                return;
+            }
+            if (message?.type === 'updateVariables' && message.externalId) {
+                void updateVariables(
+                    entry,
+                    message.externalId,
+                    message.label ?? message.externalId,
+                    message.variables ?? [],
+                );
+                return;
+            }
+            if (message?.type === 'redeploy') {
+                void redeploy(entry);
                 return;
             }
             if (message?.type === 'setVariable' && message.externalId) {
@@ -161,10 +215,13 @@ async function load(entry: OpenPanel): Promise<void> {
     }
 
     try {
-        const raw = await vscode.window.withProgress(
+        const listing = vscode.window.withProgress(
             { location: vscode.ProgressLocation.Window, title: `Versori: ${heading}` },
             () => runParsed(deps, spec),
         );
+        void cachedSystems(entry, environment);
+        void cachedSchema(entry, environment);
+        const raw = await listing;
 
         const rows = toActivationRows(raw);
         const groups = groupActivations(rows);
@@ -186,6 +243,20 @@ async function load(entry: OpenPanel): Promise<void> {
                 2,
             ),
         });
+
+        if (entry.selectedExternalId) {
+            const selected = rows.find((row) => row.externalId === entry.selectedExternalId);
+            if (selected) {
+                await showWorkspace(entry, {
+                    externalId: selected.externalId,
+                    displayName: selected.displayName,
+                    userId: selected.userId,
+                    status: selected.status,
+                });
+            } else {
+                entry.selectedExternalId = undefined;
+            }
+        }
     } catch (err) {
         const message = errorText(err);
         deps.output.appendLine(`$ ${command}`);
@@ -194,30 +265,15 @@ async function load(entry: OpenPanel): Promise<void> {
     }
 }
 
-async function createUser(entry: OpenPanel): Promise<void> {
-    const displayName = await vscode.window.showInputBox({
-        title: 'Create end-user · display name',
-        placeHolder: 'Acme Corp',
-        ignoreFocusOut: true,
-    });
-    if (displayName === undefined) {
-        return;
-    }
-    if (!displayName.trim()) {
-        void vscode.window.showWarningMessage('Versori: display name is required.');
-        return;
-    }
-
-    const externalId = await vscode.window.showInputBox({
-        title: 'Create end-user · external id',
-        placeHolder: 'acme-corp',
-        ignoreFocusOut: true,
-    });
-    if (externalId === undefined) {
-        return;
-    }
-    if (!externalId.trim()) {
-        void vscode.window.showWarningMessage('Versori: external id is required.');
+async function createUser(
+    entry: OpenPanel,
+    displayNameRaw?: string,
+    externalIdRaw?: string,
+): Promise<void> {
+    const displayName = displayNameRaw?.trim() ?? '';
+    const externalId = externalIdRaw?.trim() ?? '';
+    if (!displayName || !externalId) {
+        void vscode.window.showWarningMessage('Versori: display name and external id are required.');
         return;
     }
 
@@ -225,7 +281,7 @@ async function createUser(entry: OpenPanel): Promise<void> {
         entry,
         'creating user',
         () => buildUserCreateArgs({ displayName, externalId }),
-        `Created user "${displayName.trim()}" (${externalId.trim()}).`,
+        `Created user "${displayName}" (${externalId}).`,
         false,
     );
 }
@@ -233,122 +289,58 @@ async function createUser(entry: OpenPanel): Promise<void> {
 /**
  * Activate an inactive end-user.
  *
- * Before spawning the CLI, enumerate systems, connections, and the variable
- * schema so every `--connection` / `--variable` flag is explicit — otherwise
- * the CLI falls into an interactive TUI and hangs under `execFile`.
+ * Connection and variable picks come from the detail pane dropdowns so the CLI
+ * never falls into an interactive TUI under `execFile`.
  */
-async function activateUser(entry: OpenPanel, externalId: string, label: string): Promise<void> {
+async function activateUser(
+    entry: OpenPanel,
+    externalId: string,
+    label: string,
+    picked: { connections: ConnectionAssignment[]; variables: VariableAssignment[] },
+): Promise<void> {
     const environment = String(entry.values.environment ?? '').trim();
     if (!environment) {
         void vscode.window.showWarningMessage('Versori: choose an environment first.');
         return;
     }
 
-    let systems: SystemRow[];
+    if (picked.connections.length === 0 || picked.connections.some((item) => !item.connectionId)) {
+        void vscode.window.showWarningMessage(
+            'Versori: pick a connection for every system before activating.',
+        );
+        return;
+    }
+
     let schema: SchemaVariable[];
     try {
-        systems = await listSystems(entry, environment);
-        schema = await listSchema(entry);
+        schema = await cachedSchema(entry, environment);
     } catch (err) {
         void vscode.window.showErrorMessage(
-            `Versori: could not prepare activation — ${errorText(err)}`,
+            `Versori: could not load activation variables — ${errorText(err)}`,
         );
         return;
-    }
-
-    if (systems.length === 0) {
-        void vscode.window.showWarningMessage(
-            'Versori: this environment has no systems linked. Link a system before activating.',
-        );
-        return;
-    }
-
-    const connections: ConnectionAssignment[] = [];
-    for (const system of systems) {
-        let candidates;
-        try {
-            candidates = await listConnections(
-                entry,
-                system.systemId,
-                system.dynamic ? externalId : undefined,
-            );
-        } catch (err) {
-            void vscode.window.showErrorMessage(
-                `Versori: could not list connections for ${system.name} — ${errorText(err)}`,
-            );
-            return;
-        }
-
-        if (candidates.length === 0) {
-            void vscode.window.showWarningMessage(
-                `Versori: no ${system.dynamic ? 'embedded' : 'static'} connections for system "${system.name}". ` +
-                    'Create one with `versori connections create` first.',
-            );
-            return;
-        }
-
-        const picked =
-            candidates.length === 1
-                ? candidates[0]
-                : await vscode.window.showQuickPick(
-                      candidates.map((connection) => ({
-                          label: connection.name,
-                          description: connection.id,
-                          detail: connection.baseUrl || undefined,
-                          connection,
-                      })),
-                      {
-                          title: `Connection for ${system.name}`,
-                          ignoreFocusOut: true,
-                      },
-                  ).then((item) => item?.connection);
-
-        if (!picked) {
-            return;
-        }
-
-        connections.push({
-            templateId: system.templateId,
-            connectionId: picked.id,
-        });
     }
 
     const variables: VariableAssignment[] = [];
-    const required = schema.filter((variable) => variable.required);
-    const optional = schema.filter((variable) => !variable.required);
-
-    for (const variable of required) {
-        const value = await promptVariableValue(variable, true);
-        if (value === undefined) {
-            return;
+    try {
+        for (const item of picked.variables) {
+            const spec = schema.find((variable) => variable.name === item.name);
+            variables.push({
+                name: item.name,
+                value: encodeVariableValue(item.value, spec?.type),
+            });
         }
-        variables.push({ name: variable.name, value });
-    }
-
-    if (optional.length > 0) {
-        const extras = await vscode.window.showQuickPick(
-            optional.map((variable) => ({
-                label: variable.name,
-                description: variable.type,
-                detail: variable.description || undefined,
-                variable,
-            })),
-            {
-                title: 'Optional activation variables to set (none selected = skip)',
-                canPickMany: true,
-                ignoreFocusOut: true,
-            },
-        );
-        if (extras === undefined) {
-            return;
-        }
-        for (const item of extras) {
-            const value = await promptVariableValue(item.variable, false);
-            if (value === undefined) {
+        for (const required of schema.filter((variable) => variable.required)) {
+            if (!variables.some((item) => item.name === required.name)) {
+                void vscode.window.showWarningMessage(
+                    `Versori: ${required.name} is required before activating.`,
+                );
                 return;
             }
-            variables.push({ name: item.variable.name, value });
         }
+    } catch (err) {
+        void vscode.window.showErrorMessage(`Versori: ${errorText(err)}`);
+        return;
     }
 
     await mutate(
@@ -358,7 +350,7 @@ async function activateUser(entry: OpenPanel, externalId: string, label: string)
             buildActivationCreateArgs({
                 environment,
                 externalId,
-                connections,
+                connections: picked.connections,
                 variables,
             }),
         `Activated "${label}" on ${environment}.`,
@@ -394,63 +386,305 @@ async function deactivateUser(entry: OpenPanel, externalId: string, label: strin
     );
 }
 
-async function showDetail(entry: OpenPanel, externalId: string): Promise<void> {
-    const deps = entry.deps;
+async function showWorkspace(
+    entry: OpenPanel,
+    user: { externalId: string; displayName: string; userId: string; status: 'active' | 'inactive' },
+): Promise<void> {
+    entry.selectedExternalId = user.externalId;
     const environment = String(entry.values.environment ?? '').trim();
     if (!environment) {
-        await postDetail(entry, {
-            type: 'detail',
-            externalId,
-            heading: '',
-            connections: [],
+        await postWorkspace(entry, {
+            type: 'workspace',
+            externalId: user.externalId,
+            displayName: user.displayName,
+            userId: user.userId,
+            status: user.status,
+            activationId: '',
+            systems: [],
+            schema: [],
             variableNames: [],
-            rawJson: '',
+            variableValues: {},
             error: 'Choose an environment first.',
         });
         return;
     }
 
+    try {
+        const systemsP = cachedSystems(entry, environment);
+        const schemaP = cachedSchema(entry, environment);
+
+        if (user.status === 'active') {
+            const [systems, schema, detail] = await Promise.all([
+                systemsP,
+                schemaP,
+                loadActivationDetail(entry, environment, user.externalId),
+            ]);
+            await postWorkspace(entry, {
+                type: 'workspace',
+                externalId: user.externalId,
+                displayName: detail?.displayName || user.displayName,
+                userId: user.userId,
+                status: user.status,
+                activationId: detail?.id ?? '',
+                systems: bindSystems(systems, detail?.connections ?? []),
+                schema,
+                variableNames: detail?.variableNames ?? [],
+                variableValues: detail?.variableValues ?? {},
+            });
+            return;
+        }
+
+        const [systems, schema, endUserRaw] = await Promise.all([
+            systemsP,
+            schemaP,
+            listEndUserConnections(entry, user.externalId),
+        ]);
+        const grouped = groupConnectionsBySystem(toConnectionRows(endUserRaw));
+        const staticMissing = systems.filter(
+            (system) => !system.dynamic && !(grouped.get(system.systemId)?.length),
+        );
+        if (staticMissing.length > 0) {
+            const extras = await Promise.all(
+                staticMissing.map(async (system) => ({
+                    systemId: system.systemId,
+                    rows: await listConnections(entry, system.systemId),
+                })),
+            );
+            for (const extra of extras) {
+                grouped.set(extra.systemId, extra.rows);
+            }
+        }
+
+        await postWorkspace(entry, {
+            type: 'workspace',
+            externalId: user.externalId,
+            displayName: user.displayName,
+            userId: user.userId,
+            status: user.status,
+            activationId: '',
+            systems: systems.map((system) => ({
+                name: system.name,
+                systemId: system.systemId,
+                templateId: system.templateId,
+                dynamic: system.dynamic,
+                options: (grouped.get(system.systemId) ?? []).map((connection) => ({
+                    id: connection.id,
+                    name: connection.name,
+                    baseUrl: connection.baseUrl,
+                })),
+            })),
+            schema,
+            variableNames: [],
+            variableValues: {},
+        });
+    } catch (err) {
+        await postWorkspace(entry, {
+            type: 'workspace',
+            externalId: user.externalId,
+            displayName: user.displayName,
+            userId: user.userId,
+            status: user.status,
+            activationId: '',
+            systems: [],
+            schema: [],
+            variableNames: [],
+            variableValues: {},
+            error: errorText(err),
+        });
+    }
+}
+
+async function loadActivationDetail(
+    entry: OpenPanel,
+    environment: string,
+    externalId: string,
+) {
+    const deps = entry.deps;
     const spec: CommandSpec = {
         args: [...buildActivationDetailsArgs(environment, externalId), ...projectArgs(deps.state)],
         cwd: deps.state.projectDir,
         context: contextFor(deps.state),
     };
-
     try {
         const raw = await runParsed(deps, spec);
-        const detail = toActivationDetail(raw);
-        if (!detail) {
-            await postDetail(entry, {
-                type: 'detail',
-                externalId,
-                heading: '',
-                connections: [],
-                variableNames: [],
-                rawJson: '',
-                error: 'No activation details returned.',
-            });
-            return;
+        let detail = toActivationDetail(raw);
+        if (detail && detail.connections.length === 0) {
+            detail = withFallbackConnections(detail, await listEndUserConnections(entry, externalId));
         }
-
-        await postDetail(entry, {
-            type: 'detail',
-            externalId,
-            heading: `${detail.displayName || externalId} · ${detail.id || 'activation'}`,
-            connections: detail.connections,
-            variableNames: detail.variableNames,
-            rawJson: JSON.stringify(detail.redacted, null, 2),
-        });
-    } catch (err) {
-        await postDetail(entry, {
-            type: 'detail',
-            externalId,
-            heading: '',
-            connections: [],
-            variableNames: [],
-            rawJson: '',
-            error: errorText(err),
-        });
+        return detail;
+    } catch {
+        return undefined;
     }
+}
+
+async function deleteUser(
+    entry: OpenPanel,
+    input: { userId: string; externalId: string; label: string },
+): Promise<void> {
+    const confirmed = await vscode.window.showWarningMessage(
+        `Delete user "${input.label}" from the organisation?`,
+        {
+            modal: true,
+            detail:
+                'This calls DELETE /users/{id} and removes the end-user, not just this environment activation. ' +
+                'It cannot be undone.',
+        },
+        'Delete user',
+    );
+    if (confirmed !== 'Delete user') {
+        return;
+    }
+
+    entry.selectedExternalId = undefined;
+    await mutate(
+        entry,
+        'deleting user',
+        () => buildUserDeleteArgs({ userId: input.userId, externalId: input.externalId }),
+        `Deleted user "${input.label}".`,
+        false,
+    );
+}
+
+async function updateVariables(
+    entry: OpenPanel,
+    externalId: string,
+    label: string,
+    picked: VariableAssignment[],
+): Promise<void> {
+    const environment = String(entry.values.environment ?? '').trim();
+    if (!environment) {
+        void vscode.window.showWarningMessage('Versori: choose an environment first.');
+        return;
+    }
+    if (picked.length === 0) {
+        void vscode.window.showWarningMessage('Versori: no activation variables to update.');
+        return;
+    }
+
+    let schema: SchemaVariable[];
+    try {
+        schema = await cachedSchema(entry, environment);
+    } catch (err) {
+        void vscode.window.showErrorMessage(
+            `Versori: could not load activation variables — ${errorText(err)}`,
+        );
+        return;
+    }
+
+    const encoded: VariableAssignment[] = [];
+    try {
+        for (const item of picked) {
+            const spec = schema.find((variable) => variable.name === item.name);
+            encoded.push({
+                name: item.name,
+                value: encodeVariableValue(item.value, spec?.type),
+            });
+        }
+    } catch (err) {
+        void vscode.window.showErrorMessage(`Versori: ${errorText(err)}`);
+        return;
+    }
+
+    const deps = entry.deps;
+    const specs: CommandSpec[] = encoded.map((item) => ({
+        args: [
+            ...buildSetVariableArgs({
+                environment,
+                externalId,
+                name: item.name,
+                value: item.value,
+            }),
+            ...projectArgs(deps.state),
+        ],
+        cwd: deps.state.projectDir,
+        context: contextFor(deps.state),
+        json: false,
+    }));
+
+    try {
+        await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Notification, title: 'Versori: updating activation variables' },
+            async () => {
+                for (const spec of specs) {
+                    await run(deps.bin, spec);
+                    deps.output.appendLine(`$ ${displayCommand(spec)}`);
+                }
+            },
+        );
+        void vscode.window.showInformationMessage(`Updated activation variables on "${label}".`);
+    } catch (err) {
+        const message = errorText(err);
+        deps.output.appendLine(message);
+        void vscode.window.showErrorMessage(
+            `Versori: updating activation variables failed — ${message}`,
+        );
+    }
+
+    await load(entry);
+}
+
+async function redeploy(entry: OpenPanel): Promise<void> {
+    const environment = String(entry.values.environment ?? '').trim();
+    if (!environment) {
+        void vscode.window.showWarningMessage('Versori: choose an environment first.');
+        return;
+    }
+
+    const projectId = entry.deps.state.projectId;
+    if (!projectId) {
+        void vscode.window.showWarningMessage('Versori: no project is selected.');
+        return;
+    }
+
+    const deps = entry.deps;
+    const detailsSpec: CommandSpec = {
+        args: ['projects', 'details', projectId],
+        cwd: deps.state.projectDir,
+        context: contextFor(deps.state),
+    };
+
+    let version: { id: string; name: string } | undefined;
+    try {
+        const raw = await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Window, title: 'Versori: reading deployed version' },
+            () => runParsed(deps, detailsSpec),
+        );
+        version = readDeployedVersion(raw, environment);
+    } catch (err) {
+        void vscode.window.showErrorMessage(
+            `Versori: could not read project details — ${errorText(err)}`,
+        );
+        return;
+    }
+
+    if (!version) {
+        void vscode.window.showWarningMessage(
+            `Versori: nothing is deployed on ${environment}, so there is no version to redeploy.`,
+        );
+        return;
+    }
+
+    const confirmed = await vscode.window.showWarningMessage(
+        `Redeploy "${version.name || version.id}" to ${environment}?`,
+        {
+            modal: true,
+            detail:
+                'Runs projects versions deploy for the currently live version. ' +
+                'It does not upload local files or create a new version.',
+        },
+        'Redeploy',
+    );
+    if (confirmed !== 'Redeploy') {
+        return;
+    }
+
+    const live = version;
+    await mutate(
+        entry,
+        'redeploying',
+        () => buildVersionsDeployArgs(environment, live.id),
+        `Redeployed ${live.name || live.id} to ${environment}.`,
+    );
 }
 
 async function setVariable(entry: OpenPanel, externalId: string, label: string): Promise<void> {
@@ -462,7 +696,7 @@ async function setVariable(entry: OpenPanel, externalId: string, label: string):
 
     let schema: SchemaVariable[];
     try {
-        schema = await listSchema(entry);
+        schema = await cachedSchema(entry, environment);
     } catch (err) {
         void vscode.window.showErrorMessage(
             `Versori: could not list declared variables — ${errorText(err)}`,
@@ -567,6 +801,62 @@ async function listSystems(entry: OpenPanel, environment: string): Promise<Syste
     return toSystemRows(raw);
 }
 
+function resetCatalog(entry: OpenPanel, environment: string): void {
+    if (entry.catalogEnv === environment) {
+        return;
+    }
+    entry.catalogEnv = environment;
+    entry.catalogSystems = undefined;
+    entry.catalogSchema = undefined;
+}
+
+function cachedSystems(entry: OpenPanel, environment: string): Promise<SystemRow[]> {
+    resetCatalog(entry, environment);
+    entry.catalogSystems ??= listSystems(entry, environment).catch((err: unknown) => {
+        entry.catalogSystems = undefined;
+        throw err;
+    });
+    return entry.catalogSystems;
+}
+
+function cachedSchema(entry: OpenPanel, environment: string): Promise<SchemaVariable[]> {
+    resetCatalog(entry, environment);
+    entry.catalogSchema ??= listSchema(entry).catch((err: unknown) => {
+        entry.catalogSchema = undefined;
+        throw err;
+    });
+    return entry.catalogSchema;
+}
+
+function groupConnectionsBySystem(rows: ConnectionRow[]): Map<string, ConnectionRow[]> {
+    const grouped = new Map<string, ConnectionRow[]>();
+    for (const row of rows) {
+        const list = grouped.get(row.systemId) ?? [];
+        list.push(row);
+        grouped.set(row.systemId, list);
+    }
+    return grouped;
+}
+
+function bindSystems(
+    systems: SystemRow[],
+    connections: Array<{ id: string; name: string; systemId: string; baseUrl: string }>,
+): SystemChoice[] {
+    return systems.map((system) => {
+        const bound = connections.find((connection) => connection.systemId === system.systemId);
+        return {
+            name: system.name,
+            systemId: system.systemId,
+            templateId: system.templateId,
+            dynamic: system.dynamic,
+            options: [],
+            boundId: bound?.id,
+            boundName: bound?.name,
+            boundBaseUrl: bound?.baseUrl,
+        };
+    });
+}
+
 async function listConnections(
     entry: OpenPanel,
     systemId: string,
@@ -580,6 +870,19 @@ async function listConnections(
     };
     const raw = await runParsed(deps, spec);
     return toConnectionRows(raw);
+}
+
+async function listEndUserConnections(
+    entry: OpenPanel,
+    endUserId: string,
+): Promise<unknown> {
+    const deps = entry.deps;
+    const spec: CommandSpec = {
+        args: buildEndUserConnectionsListArgs(endUserId),
+        cwd: deps.state.projectDir,
+        context: contextFor(deps.state),
+    };
+    return runParsed(deps, spec);
 }
 
 async function listSchema(entry: OpenPanel): Promise<SchemaVariable[]> {
@@ -641,7 +944,7 @@ function post(entry: OpenPanel, payload: ActivationsPayload): Thenable<boolean> 
     return entry.panel.webview.postMessage({ type: 'activations', payload });
 }
 
-function postDetail(entry: OpenPanel, message: ActivationDetailMessage): Thenable<boolean> {
+function postWorkspace(entry: OpenPanel, message: WorkspaceMessage): Thenable<boolean> {
     return entry.panel.webview.postMessage(message);
 }
 

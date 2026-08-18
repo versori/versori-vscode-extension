@@ -6,10 +6,13 @@ import { ACTIVATIONS_SCRIPT } from './html';
 interface StubNode {
     id: string;
     tag: string;
+    type: string;
     className: string;
     value: string;
     textContent: string;
     hidden: boolean;
+    selected: boolean;
+    checked: boolean;
     dataset: Record<string, string>;
     style: Record<string, string>;
     children: StubNode[];
@@ -54,21 +57,48 @@ const ELEMENT_IDS = [
     'raw',
     'controls',
     'count',
-    'body',
     'filter',
     'refresh',
     'toggleRaw',
     'createUser',
+    'redeploy',
+    'body',
+    'userList',
+    'userDetail',
+    'newUser',
+    'newDisplayName',
+    'newExternalId',
+    'newUserCancel',
+    'newUserAdd',
 ];
+
+function matchesSelector(node: StubNode, selector: string): boolean {
+    const data = /^(\w+)?\[data-([a-z]+)\]$/.exec(selector);
+    if (data) {
+        const tag = data[1];
+        const key = data[2];
+        if (tag && node.tag !== tag) {
+            return false;
+        }
+        return Boolean(node.dataset[key]);
+    }
+    const tagged = /^(\w+)$/.exec(selector);
+    if (tagged) {
+        return node.tag === tagged[1];
+    }
+    return false;
+}
 
 function makeNode(tag: string): StubNode {
     const listeners: Record<string, Array<(event?: { stopPropagation(): void }) => void>> = {};
     const classes = new Set<string>();
     let text = '';
+    let storedValue = '';
 
     const self: StubNode = {
         id: '',
         tag,
+        type: '',
         get className() {
             return [...classes].join(' ');
         },
@@ -78,7 +108,21 @@ function makeNode(tag: string): StubNode {
                 classes.add(name);
             }
         },
-        value: '',
+        get value() {
+            if (tag === 'select') {
+                const picked = self.children.find((child) => child.selected) ?? self.children[0];
+                return picked?.value ?? storedValue;
+            }
+            return storedValue;
+        },
+        set value(next: string) {
+            storedValue = next;
+            if (tag === 'select') {
+                for (const child of self.children) {
+                    child.selected = child.value === next;
+                }
+            }
+        },
         get textContent() {
             return text;
         },
@@ -87,6 +131,8 @@ function makeNode(tag: string): StubNode {
             self.children = [];
         },
         hidden: false,
+        selected: false,
+        checked: false,
         dataset: {},
         style: {},
         children: [],
@@ -122,14 +168,9 @@ function makeNode(tag: string): StubNode {
             }
         },
         querySelectorAll(selector: string) {
-            const match = /^\[data-detail-for="(.+)"\]$/.exec(selector);
-            if (!match) {
-                return [];
-            }
-            const id = match[1];
             const found: StubNode[] = [];
             const walk = (node: StubNode) => {
-                if (node.dataset.detailFor === id) {
+                if (matchesSelector(node, selector)) {
                     found.push(node);
                 }
                 for (const child of node.children) {
@@ -146,14 +187,22 @@ function makeNode(tag: string): StubNode {
 
 function runScript(payload: TestPayload): {
     posts: Array<Record<string, unknown>>;
-    body: StubNode;
+    userList: StubNode;
+    userDetail: StubNode;
     count: StubNode;
+    nodes: Map<string, StubNode>;
+    send(data: unknown): void;
 } {
     const posts: Array<Record<string, unknown>> = [];
     const nodes = new Map<string, StubNode>();
     for (const id of ELEMENT_IDS) {
-        const node = makeNode(id === 'filter' ? 'input' : 'div');
+        const node = makeNode(
+            id === 'filter' || id === 'newDisplayName' || id === 'newExternalId' ? 'input' : 'div',
+        );
         node.id = id;
+        if (id === 'createUser' || id === 'redeploy' || id === 'newUserCancel' || id === 'newUserAdd') {
+            node.tag = 'button';
+        }
         nodes.set(id, node);
     }
 
@@ -162,7 +211,7 @@ function runScript(payload: TestPayload): {
             return nodes.get(id) ?? null;
         },
         querySelectorAll(selector: string) {
-            return nodes.get('body')?.querySelectorAll(selector) ?? [];
+            return nodes.get('userDetail')?.querySelectorAll(selector) ?? [];
         },
         createElement(tag: string) {
             return makeNode(tag);
@@ -184,8 +233,6 @@ function runScript(payload: TestPayload): {
         },
     });
 
-    // `renderControls` is exercised by shell tests; here it only needs to exist.
-    // `RAW_PANE_SCRIPT` is concatenated the same way `htmlDocument` assembles a panel.
     new Function(
         'document',
         'window',
@@ -200,9 +247,37 @@ function runScript(payload: TestPayload): {
 
     return {
         posts,
-        body: nodes.get('body') as StubNode,
+        userList: nodes.get('userList') as StubNode,
+        userDetail: nodes.get('userDetail') as StubNode,
         count: nodes.get('count') as StubNode,
+        nodes,
+        send(data: unknown) {
+            for (const listener of listeners) {
+                listener({ data });
+            }
+        },
     };
+}
+
+function findUserRow(node: StubNode, externalId: string): StubNode | undefined {
+    let found: StubNode | undefined;
+    const walk = (current: StubNode) => {
+        if (current.tag === 'button' && current.dataset.id === externalId) {
+            found = current;
+        }
+        for (const child of current.children) {
+            walk(child);
+        }
+    };
+    walk(node);
+    return found;
+}
+
+function findByText(node: StubNode, text: string): boolean {
+    if (node.textContent === text) {
+        return true;
+    }
+    return node.children.some((child) => findByText(child, text));
 }
 
 function findButtons(node: StubNode, label: string): StubNode[] {
@@ -219,9 +294,42 @@ function findButtons(node: StubNode, label: string): StubNode[] {
     return found;
 }
 
+function samplePayload(): TestPayload {
+    return {
+        heading: 'Activations · production',
+        subtitle: 'Context: demo',
+        command: 'versori projects activations list',
+        controls: [],
+        controlValues: { environment: 'production' },
+        active: [
+            {
+                externalId: 'george',
+                displayName: 'George Test Seller',
+                status: 'active',
+                activationId: '01ACT',
+                userId: '01USER',
+                createdAt: '',
+                variableSummary: 'dryMode',
+            },
+        ],
+        inactive: [
+            {
+                externalId: 'testtest',
+                displayName: 'testtest',
+                status: 'inactive',
+                activationId: '',
+                userId: '01USER2',
+                createdAt: '',
+                variableSummary: '',
+            },
+        ],
+        rawJson: '',
+    };
+}
+
 describe('ACTIVATIONS_SCRIPT', () => {
-    it('shows No results for an empty successful payload', () => {
-        const { body, count } = runScript({
+    it('shows an empty detail pane until a user is selected', () => {
+        const { userDetail, count } = runScript({
             heading: 'Activations · production',
             subtitle: 'Context: demo',
             command: 'versori projects activations list',
@@ -233,94 +341,194 @@ describe('ACTIVATIONS_SCRIPT', () => {
         });
 
         expect(count.textContent).toBe('0 users');
-        expect(body.children.some((child) => child.className === 'empty')).toBe(true);
-        expect(body.children.find((child) => child.className === 'empty')?.textContent).toBe(
-            'No results.',
-        );
+        expect(userDetail.children.some((child) => child.className === 'empty')).toBe(true);
     });
 
-    it('renders active and inactive groups separately', () => {
-        const { body } = runScript({
-            heading: 'Activations · production',
-            subtitle: 'Context: demo',
-            command: 'versori projects activations list',
-            controls: [],
-            controlValues: { environment: 'production' },
-            active: [
-                {
-                    externalId: 'acme',
-                    displayName: 'Acme',
-                    status: 'active',
-                    activationId: '01ACT',
-                    userId: '01USER',
-                    createdAt: '',
-                    variableSummary: 'tenant',
-                },
-            ],
-            inactive: [
-                {
-                    externalId: 'beta',
-                    displayName: 'Beta',
-                    status: 'inactive',
-                    activationId: '',
-                    userId: '01USER2',
-                    createdAt: '',
-                    variableSummary: '',
-                },
-            ],
-            rawJson: '',
-        });
-
-        const headings = body.children
-            .filter((child) => child.className === 'group')
+    it('lists pending users above activated users', () => {
+        const { userList } = runScript(samplePayload());
+        const headings = userList.children
+            .filter((child) => child.className === 'user-group')
             .map((group) => group.children[0]?.textContent);
-        expect(headings).toEqual(['Active (1)', 'Inactive (1)']);
+        expect(headings).toEqual(['Pending activation (1)', 'Activated (1)']);
     });
 
-    it('posts deactivate / activate / setVariable / createUser only from explicit clicks', () => {
-        const { body, posts } = runScript({
-            heading: 'Activations · production',
-            subtitle: 'Context: demo',
-            command: 'versori projects activations list',
-            controls: [],
-            controlValues: { environment: 'production' },
-            active: [
-                {
-                    externalId: 'acme',
-                    displayName: 'Acme',
-                    status: 'active',
-                    activationId: '01ACT',
-                    userId: '01USER',
-                    createdAt: '',
-                    variableSummary: '',
-                },
-            ],
-            inactive: [
-                {
-                    externalId: 'beta',
-                    displayName: 'Beta',
-                    status: 'inactive',
-                    activationId: '',
-                    userId: '01USER2',
-                    createdAt: '',
-                    variableSummary: '',
-                },
-            ],
-            rawJson: '',
-        });
-
+    it('posts select when a pending user is clicked, not activate', () => {
+        const { userList, posts } = runScript(samplePayload());
         expect(posts).toEqual([]);
 
-        findButtons(body, 'Deactivate')[0]?.fire('click');
-        findButtons(body, 'Activate')[0]?.fire('click');
-        findButtons(body, 'Set variable')[0]?.fire('click');
+        const row = findUserRow(userList, 'testtest');
+        row?.fire('click');
 
-        // createUser lives on the toolbar, not inside body — fire via getElement path
-        // by re-running is awkward, so assert the mutation posts from row actions first.
         expect(posts).toEqual([
-            { type: 'deactivate', externalId: 'acme', label: 'Acme' },
-            { type: 'activate', externalId: 'beta', label: 'Beta' },
-            { type: 'setVariable', externalId: 'acme', label: 'Acme' },
+            {
+                type: 'select',
+                externalId: 'testtest',
+                label: 'testtest',
+                userId: '01USER2',
+                status: 'inactive',
+            },
         ]);
+    });
+
+    it('renders a connection dropdown per system and activates with the chosen ids', () => {
+        const { userDetail, posts, send } = runScript(samplePayload());
+
+        send({
+            type: 'workspace',
+            externalId: 'testtest',
+            displayName: 'testtest',
+            userId: '01USER2',
+            status: 'inactive',
+            activationId: '',
+            systems: [
+                {
+                    name: 'ebay',
+                    systemId: '01EBAY',
+                    templateId: '01TPL_EBAY',
+                    dynamic: true,
+                    options: [
+                        { id: '01CONN_EBAY', name: 'George', baseUrl: 'https://api.sandbox.ebay.com' },
+                    ],
+                },
+                {
+                    name: 'Walmart_seller_onboarding',
+                    systemId: '01WAL',
+                    templateId: '01TPL_WAL',
+                    dynamic: true,
+                    options: [
+                        {
+                            id: '01CONN_WAL',
+                            name: 'Walmart-conn',
+                            baseUrl: 'https://marketplace.walmartapis.com',
+                        },
+                    ],
+                },
+            ],
+            schema: [{ name: 'DryMode', type: 'boolean', required: false, description: '' }],
+            variableNames: [],
+        });
+
+        expect(userDetail.querySelectorAll('select[data-template]')).toHaveLength(2);
+        expect(findButtons(userDetail, 'Delete user')).toHaveLength(1);
+
+        posts.length = 0;
+        findButtons(userDetail, 'Activate user')[0]?.fire('click');
+
+        expect(posts).toEqual([
+            {
+                type: 'activate',
+                externalId: 'testtest',
+                label: 'testtest',
+                connections: [
+                    { templateId: '01TPL_EBAY', connectionId: '01CONN_EBAY' },
+                    { templateId: '01TPL_WAL', connectionId: '01CONN_WAL' },
+                ],
+                variables: [{ name: 'DryMode', value: 'false' }],
+            },
+        ]);
+    });
+
+    it('posts deleteUser from the detail pane', () => {
+        const { userDetail, posts, send } = runScript(samplePayload());
+        send({
+            type: 'workspace',
+            externalId: 'testtest',
+            displayName: 'testtest',
+            userId: '01USER2',
+            status: 'inactive',
+            activationId: '',
+            systems: [],
+            schema: [],
+            variableNames: [],
+        });
+
+        posts.length = 0;
+        findButtons(userDetail, 'Delete user')[0]?.fire('click');
+        expect(posts).toEqual([
+            {
+                type: 'deleteUser',
+                externalId: 'testtest',
+                userId: '01USER2',
+                label: 'testtest',
+            },
+        ]);
+    });
+
+    it('opens New User with both fields and posts them together', () => {
+        const { posts, nodes } = runScript(samplePayload());
+        expect(posts).toEqual([]);
+        nodes.get('createUser')?.fire('click');
+        expect(posts).toEqual([]);
+        expect(nodes.get('newUser')?.hidden).toBe(false);
+
+        nodes.get('newDisplayName')!.value = 'Paddy Test Seller';
+        nodes.get('newExternalId')!.value = 'paddy';
+        nodes.get('newUserAdd')?.fire('click');
+
+        expect(posts).toEqual([
+            {
+                type: 'createUser',
+                displayName: 'Paddy Test Seller',
+                externalId: 'paddy',
+            },
+        ]);
+        expect(nodes.get('newUser')?.hidden).toBe(true);
+    });
+
+    it('shows current variable values for an activated user and posts Update variables', () => {
+        const { userDetail, posts, send } = runScript(samplePayload());
+        send({
+            type: 'workspace',
+            externalId: 'george',
+            displayName: 'George Test Seller',
+            userId: '01USER',
+            status: 'active',
+            activationId: '01ACT',
+            systems: [
+                {
+                    name: 'ebay',
+                    systemId: '01EBAY',
+                    templateId: '01TPL_EBAY',
+                    dynamic: true,
+                    options: [],
+                    boundName: 'George',
+                },
+            ],
+            schema: [
+                { name: 'DryMode', type: 'boolean', required: false, description: '' },
+                { name: 'batchFlushRows', type: 'integer', required: false, description: '' },
+            ],
+            variableNames: ['DryMode', 'batchFlushRows'],
+            variableValues: { DryMode: 'true', batchFlushRows: '600' },
+        });
+
+        expect(findByText(userDetail, 'Activated')).toBe(true);
+        expect(findByText(userDetail, 'Connected - George · Authorization Code')).toBe(true);
+        expect(findByText(userDetail, 'External ID: george')).toBe(true);
+        expect(findByText(userDetail, 'Activation ID: 01ACT')).toBe(true);
+        const boxes = userDetail.querySelectorAll('[data-var]');
+        expect(boxes).toHaveLength(2);
+        expect(boxes.find((node) => node.dataset.var === 'DryMode')?.checked).toBe(true);
+        expect(boxes.find((node) => node.dataset.var === 'batchFlushRows')?.value).toBe('600');
+
+        posts.length = 0;
+        findButtons(userDetail, 'Update Activation Variables')[0]?.fire('click');
+        expect(posts).toEqual([
+            {
+                type: 'updateVariables',
+                externalId: 'george',
+                label: 'George Test Seller',
+                variables: [
+                    { name: 'DryMode', value: 'true' },
+                    { name: 'batchFlushRows', value: '600' },
+                ],
+            },
+        ]);
+    });
+
+    it('posts redeploy from the toolbar', () => {
+        const { posts, nodes } = runScript(samplePayload());
+        nodes.get('redeploy')?.fire('click');
+        expect(posts).toEqual([{ type: 'redeploy' }]);
     });
 });

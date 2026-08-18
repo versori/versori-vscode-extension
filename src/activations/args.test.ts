@@ -7,10 +7,13 @@ import {
     buildActivationDetailsArgs,
     buildActivationListArgs,
     buildConnectionsListArgs,
+    buildEndUserConnectionsListArgs,
     buildSchemaListArgs,
     buildSetVariableArgs,
     buildSystemsListArgs,
     buildUserCreateArgs,
+    buildUserDeleteArgs,
+    buildVersionsDeployArgs,
     formatConnectionFlag,
     formatVariableFlag,
 } from './args';
@@ -82,6 +85,43 @@ describe('user create args', () => {
         expect(() => buildUserCreateArgs({ displayName: 'Acme', externalId: '' })).toThrow(
             /external id/,
         );
+    });
+});
+
+describe('user delete args', () => {
+    it('deletes by platform user id with --yes so execFile never waits on a TTY', () => {
+        expect(buildUserDeleteArgs({ userId: '01USER' })).toEqual([
+            'users',
+            'delete',
+            '--id',
+            '01USER',
+            '--yes',
+        ]);
+    });
+
+    it('falls back to --external-id when the list row has no user id', () => {
+        expect(buildUserDeleteArgs({ externalId: 'testtest' })).toEqual([
+            'users',
+            'delete',
+            '--external-id',
+            'testtest',
+            '--yes',
+        ]);
+    });
+
+    it('prefers the ULID over the external id', () => {
+        expect(buildUserDeleteArgs({ userId: '01USER', externalId: 'testtest' })).toEqual([
+            'users',
+            'delete',
+            '--id',
+            '01USER',
+            '--yes',
+        ]);
+    });
+
+    it('rejects a blank identity', () => {
+        expect(() => buildUserDeleteArgs({})).toThrow(/user/);
+        expect(() => buildUserDeleteArgs({ userId: '  ' })).toThrow(/user/);
     });
 });
 
@@ -182,10 +222,31 @@ describe('enumeration helpers', () => {
             '--end-user',
             'acme',
         ]);
+        expect(buildEndUserConnectionsListArgs('acme')).toEqual([
+            'connections',
+            'list',
+            '--end-user',
+            'acme',
+        ]);
+        expect(() => buildEndUserConnectionsListArgs('  ')).toThrow(/end user/);
     });
 
     it('lists the project variable schema', () => {
         expect(buildSchemaListArgs()).toEqual(['projects', 'variables', 'list']);
+    });
+
+    it('redeploys an existing version without uploading local files', () => {
+        expect(buildVersionsDeployArgs('production', '01VER')).toEqual([
+            'projects',
+            'versions',
+            'deploy',
+            '--environment',
+            'production',
+            '--version-id',
+            '01VER',
+        ]);
+        expect(() => buildVersionsDeployArgs('', '01VER')).toThrow(/environment/);
+        expect(() => buildVersionsDeployArgs('production', '  ')).toThrow(/version/);
     });
 });
 

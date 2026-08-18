@@ -9,6 +9,8 @@ import {
     toConnectionRows,
     toSchemaVariables,
     toSystemRows,
+    withFallbackConnections,
+    readDeployedVersion,
 } from './rows';
 
 const activeUser = {
@@ -155,9 +157,54 @@ describe('toActivationDetail', () => {
             },
         ]);
         expect(detail?.variableNames).toEqual(['tenant']);
+        expect(detail?.variableValues).toEqual({ tenant: 'secret-value' });
         expect(JSON.stringify(detail?.redacted)).not.toContain('super-secret');
         expect(JSON.stringify(detail?.redacted)).not.toContain('also-secret');
         expect(JSON.stringify(detail?.redacted)).not.toContain('secret-value');
+    });
+
+    it('fills empty activation connections from the end-user connections list', () => {
+        const detail = toActivationDetail({
+            id: '01ACT',
+            user: { displayName: 'Acme', externalId: 'acme' },
+            connections: [],
+        });
+        const filled = withFallbackConnections(detail!, [
+            {
+                connectionId: '01CONN',
+                connectionName: 'Acme Mirakl',
+                systemId: '01SYS',
+                baseUrl: 'https://example.test',
+            },
+        ]);
+        expect(filled?.connections).toEqual([
+            {
+                id: '01CONN',
+                name: 'Acme Mirakl',
+                systemId: '01SYS',
+                templateId: '',
+                baseUrl: 'https://example.test',
+            },
+        ]);
+    });
+
+    it('stringifies boolean and number activation variable values for the editor', () => {
+        const detail = toActivationDetail({
+            id: '01ACT',
+            dynamicVariables: { dryMode: true, batchFlushRows: 600 },
+        });
+        expect(detail?.variableValues).toEqual({ batchFlushRows: '600', dryMode: 'true' });
+    });
+
+    it('does not replace connections already on the activation', () => {
+        const detail = toActivationDetail({
+            id: '01ACT',
+            connections: [{ id: '01BOUND', name: 'Bound' }],
+        });
+        const filled = withFallbackConnections(detail!, [
+            { connectionId: '01OTHER', connectionName: 'Other' },
+        ]);
+        expect(filled?.connections.map((c) => c.id)).toEqual(['01BOUND']);
     });
 });
 
@@ -173,5 +220,25 @@ describe('encodeVariableValue', () => {
 
     it('rejects invalid object JSON', () => {
         expect(() => encodeVariableValue('{bad', 'object')).toThrow();
+    });
+});
+
+describe('readDeployedVersion', () => {
+    it('reads the live version id for one environment from projects details', () => {
+        expect(
+            readDeployedVersion(
+                {
+                    environments: [
+                        {
+                            name: 'production',
+                            deployedVersion: { id: '01VER', name: 'v12' },
+                        },
+                        { name: 'staging' },
+                    ],
+                },
+                'production',
+            ),
+        ).toEqual({ id: '01VER', name: 'v12' });
+        expect(readDeployedVersion({ environments: [{ name: 'production' }] }, 'production')).toBeUndefined();
     });
 });

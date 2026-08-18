@@ -5,6 +5,11 @@ export interface UserCreateInput {
     externalId: string;
 }
 
+export interface UserDeleteInput {
+    userId?: string;
+    externalId?: string;
+}
+
 export interface ConnectionAssignment {
     /** Environment system / connection-template ID (LHS of `--connection`). */
     templateId: string;
@@ -97,6 +102,25 @@ export function buildUserCreateArgs(input: UserCreateInput): string[] {
         '--external-id',
         externalId,
     ];
+}
+
+export function buildUserDeleteArgs(input: UserDeleteInput): string[] {
+    const userId = input.userId?.trim() ?? '';
+    const externalId = input.externalId?.trim() ?? '';
+    if (!userId && !externalId) {
+        throw new Error('user id or external id is required');
+    }
+
+    const args = ['users', 'delete'];
+    if (userId) {
+        args.push('--id', userId);
+    } else {
+        args.push('--external-id', externalId);
+    }
+    // The CLI confirms on a TTY; execFile has none, so --yes is required.
+    // The extension shows its own modal before spawning this.
+    args.push('--yes');
+    return args;
 }
 
 /**
@@ -195,8 +219,37 @@ export function buildConnectionsListArgs(systemId: string, endUserId?: string): 
     return args;
 }
 
+/** Org-wide embedded connections for one end-user (no system filter). */
+export function buildEndUserConnectionsListArgs(endUserId: string): string[] {
+    const id = endUserId.trim();
+    if (!id) {
+        throw new Error('end user is required');
+    }
+    return ['connections', 'list', '--end-user', id];
+}
+
 export function buildSchemaListArgs(): string[] {
     return ['projects', 'variables', 'list'];
+}
+
+export function buildVersionsDeployArgs(environment: string, versionId: string): string[] {
+    const env = environment.trim();
+    const id = versionId.trim();
+    if (!env) {
+        throw new Error('environment is required');
+    }
+    if (!id) {
+        throw new Error('version id is required');
+    }
+    return [
+        'projects',
+        'versions',
+        'deploy',
+        '--environment',
+        env,
+        '--version-id',
+        id,
+    ];
 }
 
 export function formatConnectionFlag(templateId: string, connectionId: string): string {
