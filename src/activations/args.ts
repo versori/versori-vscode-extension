@@ -118,7 +118,7 @@ export function buildUserDeleteArgs(input: UserDeleteInput): string[] {
         args.push('--external-id', externalId);
     }
     // The CLI confirms on a TTY; execFile has none, so --yes is required.
-    // The extension shows its own modal before spawning this.
+    // The extension shows its own modal before spawning this. --confirm is accepted too.
     args.push('--yes');
     return args;
 }
@@ -277,4 +277,31 @@ export function formatVariableFlag(name: string, value: string): string {
         throw new Error('variable names must not contain "="');
     }
     return `${key}=${value}`;
+}
+
+export interface StaticConnectionSource {
+    templateId: string;
+    dynamic: boolean;
+    connectionId?: string;
+}
+
+/** Static systems are hidden in the Users pane; still required on `activations create`. */
+export function mergePickedWithStaticConnections(
+    picked: ConnectionAssignment[],
+    systems: StaticConnectionSource[],
+): ConnectionAssignment[] {
+    const out: ConnectionAssignment[] = [...picked];
+    const seen = new Set(picked.map((item) => item.templateId));
+    for (const system of systems) {
+        if (system.dynamic || seen.has(system.templateId)) {
+            continue;
+        }
+        const connectionId = system.connectionId?.trim() ?? '';
+        if (!connectionId) {
+            continue;
+        }
+        out.push({ templateId: system.templateId, connectionId });
+        seen.add(system.templateId);
+    }
+    return out;
 }

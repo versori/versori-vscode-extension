@@ -151,7 +151,8 @@ KV values can hold secrets, and this branch's redaction matches on key *names* â
 own field names are literally `key` and `value`, so there is nothing for it to catch there.
 
 **Set entry**, **Edit**, **Delete**, and **Wipe prefix** are available from the same panel. Every
-write is host-confirmed before the noninteractive CLI invocation: set/delete use `--yes`, while
+write is host-confirmed before the noninteractive CLI invocation: set/delete use `--yes` (the CLI
+also accepts `--confirm` as the same skip-prompt), while
 wipe runs the CLI dry-run first and only sends `--confirm` after the bulk target and count are
 shown. Empty keys and whole-scope wipes are refused by the extension.
 

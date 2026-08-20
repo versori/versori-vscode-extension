@@ -370,7 +370,7 @@ describe('ACTIVATIONS_SCRIPT', () => {
         ]);
     });
 
-    it('renders a connection dropdown per system and activates with the chosen ids', () => {
+    it('shows bound dynamic credentials as Connected and activates with those ids', () => {
         const { userDetail, posts, send } = runScript(samplePayload());
 
         send({
@@ -403,12 +403,22 @@ describe('ACTIVATIONS_SCRIPT', () => {
                         },
                     ],
                 },
+                {
+                    name: 'Postgres',
+                    systemId: '01PG',
+                    templateId: '01TPL_PG',
+                    dynamic: false,
+                    options: [{ id: '01CONN_PG', name: 'prod-pg', baseUrl: '' }],
+                },
             ],
             schema: [{ name: 'DryMode', type: 'boolean', required: false, description: '' }],
             variableNames: [],
         });
 
-        expect(userDetail.querySelectorAll('select[data-template]')).toHaveLength(2);
+        expect(findByText(userDetail, 'Postgres')).toBe(false);
+        expect(userDetail.querySelectorAll('select[data-template]')).toHaveLength(0);
+        expect(findByText(userDetail, 'Connected')).toBe(true);
+        expect(findByText(userDetail, 'George')).toBe(true);
         expect(findButtons(userDetail, 'Delete user')).toHaveLength(1);
 
         posts.length = 0;
@@ -424,6 +434,58 @@ describe('ACTIVATIONS_SCRIPT', () => {
                     { templateId: '01TPL_WAL', connectionId: '01CONN_WAL' },
                 ],
                 variables: [{ name: 'DryMode', value: 'false' }],
+            },
+        ]);
+    });
+
+    it('shows a grey picker for unbound dynamic systems and hides static systems', () => {
+        const { userDetail, posts, send } = runScript(samplePayload());
+        send({
+            type: 'workspace',
+            externalId: 'testtest',
+            displayName: 'testtest',
+            userId: '01USER2',
+            status: 'inactive',
+            activationId: '',
+            systems: [
+                {
+                    name: 'ebay',
+                    systemId: '01EBAY',
+                    templateId: '01TPL_EBAY',
+                    dynamic: true,
+                    options: [
+                        { id: '01CONN_A', name: 'George', baseUrl: '' },
+                        { id: '01CONN_B', name: 'Other', baseUrl: '' },
+                    ],
+                },
+                {
+                    name: 'Postgres',
+                    systemId: '01PG',
+                    templateId: '01TPL_PG',
+                    dynamic: false,
+                    options: [{ id: '01CONN_PG', name: 'prod-pg', baseUrl: '' }],
+                },
+            ],
+            schema: [],
+            variableNames: [],
+        });
+
+        expect(findByText(userDetail, 'Postgres')).toBe(false);
+        expect(findByText(userDetail, 'ebay')).toBe(true);
+        const selects = userDetail.querySelectorAll('select[data-template]');
+        expect(selects).toHaveLength(1);
+        expect(selects[0]?.className).toContain('cred-select');
+
+        posts.length = 0;
+        selects[0]!.value = '01CONN_B';
+        findButtons(userDetail, 'Activate user')[0]?.fire('click');
+        expect(posts).toEqual([
+            {
+                type: 'activate',
+                externalId: 'testtest',
+                label: 'testtest',
+                connections: [{ templateId: '01TPL_EBAY', connectionId: '01CONN_B' }],
+                variables: [],
             },
         ]);
     });
@@ -503,7 +565,9 @@ describe('ACTIVATIONS_SCRIPT', () => {
         });
 
         expect(findByText(userDetail, 'Activated')).toBe(true);
-        expect(findByText(userDetail, 'Connected - George · Authorization Code')).toBe(true);
+        expect(findByText(userDetail, 'Connected')).toBe(true);
+        expect(findByText(userDetail, 'George')).toBe(true);
+        expect(findByText(userDetail, 'Connected - George · Authorization Code')).toBe(false);
         expect(findByText(userDetail, 'External ID: george')).toBe(true);
         expect(findByText(userDetail, 'Activation ID: 01ACT')).toBe(true);
         const boxes = userDetail.querySelectorAll('[data-var]');

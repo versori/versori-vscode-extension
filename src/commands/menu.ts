@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import { showActivationsPanel } from '../activations/panel';
+import { showConnectorsPanel } from '../connectors/panel';
 import { CliError, run, runJson } from '../cli';
 import { parseContextList } from '../contexts';
 import { resolveEnvironmentNames } from '../environments';
@@ -356,14 +357,7 @@ async function showConnectors(deps: MenuDeps, popup: PopupSession): Promise<'men
         return 'menu';
     }
 
-    await showResults(deps, {
-        id: 'connectors',
-        heading: (values) => `Connectors · ${values[ENVIRONMENT_ID]}`,
-        baseArgs: ['projects', 'systems', 'list', ...projectArgs(deps.state)],
-        controls: [environmentControl(environments)],
-        controlArgs: environmentArgs,
-        preferred: ['name', 'id', 'templateBaseUrl'],
-    });
+    await showConnectorsPanel(deps, environments);
     return 'close';
 }
 

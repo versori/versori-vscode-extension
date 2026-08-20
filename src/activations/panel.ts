@@ -19,6 +19,7 @@ import {
     buildUserCreateArgs,
     buildUserDeleteArgs,
     buildVersionsDeployArgs,
+    mergePickedWithStaticConnections,
     ConnectionAssignment,
     VariableAssignment,
 } from './args';
@@ -304,7 +305,51 @@ async function activateUser(
         return;
     }
 
-    if (picked.connections.length === 0 || picked.connections.some((item) => !item.connectionId)) {
+    let systems: SystemRow[];
+    try {
+        systems = await cachedSystems(entry, environment);
+    } catch (err) {
+        void vscode.window.showErrorMessage(
+            `Versori: could not load environment systems — ${errorText(err)}`,
+        );
+        return;
+    }
+
+    const missingDynamic = systems.some(
+        (system) =>
+            system.dynamic &&
+            !picked.connections.some((item) => item.templateId === system.templateId && item.connectionId),
+    );
+    if (missingDynamic) {
+        void vscode.window.showWarningMessage(
+            'Versori: pick a connection for every system before activating.',
+        );
+        return;
+    }
+
+    let connections: ConnectionAssignment[];
+    try {
+        const staticSources = await Promise.all(
+            systems
+                .filter((system) => !system.dynamic)
+                .map(async (system) => {
+                    const rows = await listConnections(entry, system.systemId);
+                    return {
+                        templateId: system.templateId,
+                        dynamic: false,
+                        connectionId: rows[0]?.id ?? '',
+                    };
+                }),
+        );
+        connections = mergePickedWithStaticConnections(picked.connections, staticSources);
+    } catch (err) {
+        void vscode.window.showErrorMessage(
+            `Versori: could not load static connections — ${errorText(err)}`,
+        );
+        return;
+    }
+
+    if (connections.length === 0 || connections.some((item) => !item.connectionId)) {
         void vscode.window.showWarningMessage(
             'Versori: pick a connection for every system before activating.',
         );
@@ -350,7 +395,7 @@ async function activateUser(
             buildActivationCreateArgs({
                 environment,
                 externalId,
-                connections: picked.connections,
+                connections,
                 variables,
             }),
         `Activated "${label}" on ${environment}.`,
@@ -440,20 +485,6 @@ async function showWorkspace(
             listEndUserConnections(entry, user.externalId),
         ]);
         const grouped = groupConnectionsBySystem(toConnectionRows(endUserRaw));
-        const staticMissing = systems.filter(
-            (system) => !system.dynamic && !(grouped.get(system.systemId)?.length),
-        );
-        if (staticMissing.length > 0) {
-            const extras = await Promise.all(
-                staticMissing.map(async (system) => ({
-                    systemId: system.systemId,
-                    rows: await listConnections(entry, system.systemId),
-                })),
-            );
-            for (const extra of extras) {
-                grouped.set(extra.systemId, extra.rows);
-            }
-        }
 
         await postWorkspace(entry, {
             type: 'workspace',

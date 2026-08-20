@@ -208,7 +208,49 @@ const ACTIVATIONS_CSS = `
     margin-bottom: 8px;
   }
   .card-head h3 { margin: 0; }
-  .connected { font-size: 0.92em; margin: 0 0 10px; }
+  .cred-row + .cred-row {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.22));
+  }
+  .cred-row h4 {
+    margin: 0 0 8px;
+    font-size: 1.2em;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+  .cred-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-weight: 600;
+  }
+  .cred-status .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .cred-status.connected {
+    color: #3fa66b;
+    background: rgba(63,166,107,0.16);
+  }
+  .cred-status.connected .dot { background: #3fa66b; }
+  .cred-status.missing {
+    color: var(--vscode-descriptionForeground);
+    background: rgba(128,128,128,0.14);
+  }
+  .cred-conn-name { font-weight: 500; opacity: 0.92; }
+  .card select.cred-select {
+    padding: 8px 10px;
+    color: var(--vscode-descriptionForeground);
+    background: rgba(128,128,128,0.16);
+    border: 1px solid rgba(128,128,128,0.38);
+    border-radius: 4px;
+  }
   .modal {
     position: fixed;
     inset: 0;
@@ -402,11 +444,16 @@ export const ACTIVATIONS_SCRIPT = `
 
   function collectConnections() {
     const connections = [];
-    const nodes = el('userDetail').querySelectorAll('select[data-template]');
+    const seen = {};
+    const nodes = el('userDetail').querySelectorAll('[data-template]');
     for (const node of nodes) {
-      if (node.value) {
-        connections.push({ templateId: node.dataset.template, connectionId: node.value });
-      }
+      const templateId = node.dataset.template;
+      if (!templateId || seen[templateId]) continue;
+      const tag = String(node.tagName || node.tag || '').toLowerCase();
+      const connectionId = tag === 'select' ? node.value : (node.dataset.connection || '');
+      if (!connectionId) continue;
+      seen[templateId] = true;
+      connections.push({ templateId: templateId, connectionId: connectionId });
     }
     return connections;
   }
@@ -552,51 +599,74 @@ export const ACTIVATIONS_SCRIPT = `
       : 'Pick an existing connection for each system, then activate.';
     cred.appendChild(credHint);
 
+    const dynamicSystems = (workspace.systems || []).filter((system) => system.dynamic);
     if (!workspace.systems || workspace.systems.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'empty';
       empty.textContent = 'No systems linked on this environment.';
       cred.appendChild(empty);
+    } else if (dynamicSystems.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = 'No per-user credentials on this environment.';
+      cred.appendChild(empty);
     } else {
-      for (const system of workspace.systems) {
-        const label = document.createElement('label');
-        label.textContent = system.name;
-        cred.appendChild(label);
+      for (const system of dynamicSystems) {
+        const row = document.createElement('div');
+        row.className = 'cred-row';
+        const title = document.createElement('h4');
+        title.textContent = system.name;
+        row.appendChild(title);
 
-        if (active) {
-          const connected = document.createElement('p');
-          connected.className = 'connected';
-          connected.textContent = system.boundName
-            ? 'Connected - ' + system.boundName + ' · Authorization Code'
-            : 'No connection';
-          cred.appendChild(connected);
-          continue;
-        }
+        const single = system.options && system.options.length === 1 ? system.options[0] : null;
+        const boundId = system.boundId || (single && single.id) || '';
+        const boundName = system.boundName || (single && single.name) || '';
+        const bound = boundId || boundName;
 
-        const hint = document.createElement('p');
-        hint.className = 'hint';
-        hint.textContent = system.dynamic ? 'No connection — per-user (embedded)' : 'No connection — static';
-        cred.appendChild(hint);
-
-        const select = document.createElement('select');
-        select.dataset.template = system.templateId;
-        const placeholder = document.createElement('option');
-        placeholder.value = '';
-        placeholder.textContent = system.options && system.options.length
-          ? 'Select existing connection'
-          : 'No connections for this user';
-        select.appendChild(placeholder);
-        for (const option of system.options || []) {
-          const node = document.createElement('option');
-          node.value = option.id;
-          node.textContent = option.name + (option.baseUrl ? ' · ' + option.baseUrl : '');
-          if ((system.options || []).length === 1) {
-            placeholder.selected = false;
-            node.selected = true;
+        if (bound) {
+          if (boundId) {
+            row.dataset.template = system.templateId;
+            row.dataset.connection = boundId;
           }
-          select.appendChild(node);
+          const status = document.createElement('div');
+          status.className = 'cred-status connected';
+          const dot = document.createElement('span');
+          dot.className = 'dot';
+          status.appendChild(dot);
+          const label = document.createElement('span');
+          label.textContent = 'Connected';
+          status.appendChild(label);
+          if (boundName) {
+            const name = document.createElement('span');
+            name.className = 'cred-conn-name';
+            name.textContent = boundName;
+            status.appendChild(name);
+          }
+          row.appendChild(status);
+        } else if (active) {
+          const status = document.createElement('div');
+          status.className = 'cred-status missing';
+          status.textContent = 'Not connected';
+          row.appendChild(status);
+        } else {
+          const select = document.createElement('select');
+          select.className = 'cred-select';
+          select.dataset.template = system.templateId;
+          const placeholder = document.createElement('option');
+          placeholder.value = '';
+          placeholder.textContent = system.options && system.options.length
+            ? 'Select existing connection'
+            : 'No connections for this user';
+          select.appendChild(placeholder);
+          for (const option of system.options || []) {
+            const node = document.createElement('option');
+            node.value = option.id;
+            node.textContent = option.name + (option.baseUrl ? ' · ' + option.baseUrl : '');
+            select.appendChild(node);
+          }
+          row.appendChild(select);
         }
-        cred.appendChild(select);
+        cred.appendChild(row);
       }
     }
     pane.appendChild(cred);

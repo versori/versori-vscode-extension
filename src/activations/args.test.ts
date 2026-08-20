@@ -16,6 +16,7 @@ import {
     buildVersionsDeployArgs,
     formatConnectionFlag,
     formatVariableFlag,
+    mergePickedWithStaticConnections,
 } from './args';
 
 describe('activationControls', () => {
@@ -259,5 +260,30 @@ describe('flag formatters', () => {
     it('rejects malformed pairs', () => {
         expect(() => formatConnectionFlag('', '01CONN')).toThrow();
         expect(() => formatVariableFlag('bad=name', 'x')).toThrow(/=/);
+    });
+});
+
+describe('mergePickedWithStaticConnections', () => {
+    it('appends static system connections the UI does not show', () => {
+        expect(
+            mergePickedWithStaticConnections(
+                [{ templateId: '01TPL_EBAY', connectionId: '01CONN_EBAY' }],
+                [
+                    { templateId: '01TPL_EBAY', dynamic: true, connectionId: 'ignored' },
+                    { templateId: '01TPL_PG', dynamic: false, connectionId: '01CONN_PG' },
+                ],
+            ),
+        ).toEqual([
+            { templateId: '01TPL_EBAY', connectionId: '01CONN_EBAY' },
+            { templateId: '01TPL_PG', connectionId: '01CONN_PG' },
+        ]);
+    });
+
+    it('skips static systems that have no connection id', () => {
+        expect(
+            mergePickedWithStaticConnections([], [
+                { templateId: '01TPL_PG', dynamic: false, connectionId: '' },
+            ]),
+        ).toEqual([]);
     });
 });
