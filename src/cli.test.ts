@@ -165,6 +165,14 @@ function stubBinary(body: string, code = 0): string {
     return filePath;
 }
 
+/** Replaces the shell with sleep so aborting execFile kills the real child. */
+function slowBinary(): string {
+    const filePath = path.join(root, `slow-${Math.random().toString(36).slice(2)}`);
+    fs.writeFileSync(filePath, '#!/bin/sh\nexec sleep 30\n');
+    fs.chmodSync(filePath, 0o755);
+    return filePath;
+}
+
 describe('runJson', () => {
     it('resolves to undefined when the command prints nothing', async () => {
         // `projects logs` with no matching entries exits 0 and prints zero bytes.
@@ -173,6 +181,10 @@ describe('runJson', () => {
 
     it('treats whitespace-only output as no results', async () => {
         await expect(runJson(stubBinary('\n  \n'), { args: ['x'] })).resolves.toBeUndefined();
+    });
+
+    it('treats the CLI empty-list marker as no results', async () => {
+        await expect(runJson(stubBinary('(no items)\n'), { args: ['notifications', 'project', 'list'] })).resolves.toBeUndefined();
     });
 
     it('parses real JSON output', async () => {
@@ -216,5 +228,17 @@ describe('runJson', () => {
                 !cliError.message.includes('SECRET') && !cliError.stderr.includes('SECRET')
             );
         });
+    });
+
+    it('aborts the CLI child when its request signal is cancelled', async () => {
+        const controller = new AbortController();
+        const running = runJson(slowBinary(), {
+            args: ['projects', 'logs'],
+            signal: controller.signal,
+        });
+
+        controller.abort();
+
+        await expect(running).rejects.toThrow();
     });
 });

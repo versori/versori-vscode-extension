@@ -32,16 +32,48 @@ ${parts.styles}
 </style>
 </head>
 <body>
+${NAV_CHROME}
 ${parts.body}
 <script nonce="${parts.nonce}">
 ${CONTROLS_SCRIPT}
 ${FIELD_PICKER_SCRIPT}
 ${RAW_PANE_SCRIPT}
+${NAV_SCRIPT}
 ${parts.script}
 </script>
 </body>
 </html>`;
 }
+
+/**
+ * Top-bar chrome shared by every panel: Back (reopen menu) and Close (dispose).
+ * Panels must call `wireNav(vscode)` after `acquireVsCodeApi()` — the API can
+ * only be acquired once per document, so the shell cannot own that call.
+ */
+export const NAV_CHROME = `
+  <div class="nav-bar" id="versoriNav">
+    <button type="button" id="navBack" class="nav-btn" title="Back to menu" aria-label="Back to menu">←</button>
+    <span class="nav-spacer"></span>
+    <button type="button" id="navClose" class="nav-btn" title="Close" aria-label="Close">×</button>
+  </div>
+`;
+
+export const NAV_SCRIPT = `
+function wireNav(vscode) {
+  const back = document.getElementById('navBack');
+  const close = document.getElementById('navClose');
+  if (back) {
+    back.addEventListener('click', () => {
+      vscode.postMessage({ type: 'nav', action: 'back' });
+    });
+  }
+  if (close) {
+    close.addEventListener('click', () => {
+      vscode.postMessage({ type: 'nav', action: 'close' });
+    });
+  }
+}
+`;
 
 export const BASE_CSS = `
   :root { color-scheme: light dark; }
@@ -52,6 +84,27 @@ export const BASE_CSS = `
     background: var(--vscode-editor-background);
     margin: 0;
     padding: 20px 24px;
+  }
+  .nav-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: -4px 0 14px;
+  }
+  .nav-spacer { flex: 1; }
+  .nav-btn {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    line-height: 1;
+    font-size: 1.15em;
+    font-weight: 600;
+    border-radius: 4px;
+    color: var(--vscode-foreground);
+    background: transparent;
+  }
+  .nav-btn:hover {
+    background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2));
   }
   h1 { font-size: 1.25em; font-weight: 600; margin: 0 0 4px; }
   .subtitle { color: var(--vscode-descriptionForeground); font-size: 0.9em; margin: 0 0 4px; }

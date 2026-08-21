@@ -4,11 +4,20 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import { findCli } from './cli';
-import { showMenu } from './commands/menu';
+import {
+    MENU_ACTIONS,
+    MenuAction,
+    MenuDeps,
+    actionFor,
+    reportError,
+    showMenu,
+} from './commands/menu';
 import { FormDeps, openDeployForm, openSaveVersionForm } from './forms/panel';
+import { KeybindingStore } from './keybindings/store';
 import { PopupSession } from './forms/popup';
 import { LocalContextResolver } from './resolver/local';
 import { ContextResolver, EMPTY_STATE, ResolvedState } from './resolver/types';
+import { VersoriSidebar } from './sidebar';
 import { VersoriStatusBar } from './statusbar';
 import { openSyncForm } from './sync/panel';
 
@@ -22,17 +31,25 @@ export function activate(context: vscode.ExtensionContext): void {
     const output = vscode.window.createOutputChannel('Versori');
     context.subscriptions.push(output);
 
+    const keybindings = new KeybindingStore(context.globalStorageUri.fsPath);
+    const chordFor = (command: string): string | undefined => keybindings.chordFor(command);
+
     const resolver: ContextResolver = new LocalContextResolver({
         log: (message) => output.appendLine(message),
     });
 
-    const statusBar = new VersoriStatusBar(MENU_COMMAND);
+    const statusBar = new VersoriStatusBar(MENU_COMMAND, () => chordFor(MENU_COMMAND));
     context.subscriptions.push(statusBar);
 
     // The directory currently being reported on, so the bar does not blank when
     // focus moves to a terminal. Never holds a resolved result — see Scope.
     let lastScope: Scope | undefined;
     let lastState: ResolvedState = EMPTY_STATE;
+    const sidebar = new VersoriSidebar(MENU_COMMAND, () => lastState, () => chordFor(MENU_COMMAND));
+    context.subscriptions.push(
+        sidebar,
+        vscode.window.registerTreeDataProvider('versori.menu', sidebar),
+    );
 
     const cliPath = (): string | undefined => {
         const configured = vscode.workspace
@@ -43,6 +60,7 @@ export function activate(context: vscode.ExtensionContext): void {
     };
 
     const refresh = (): void => {
+        keybindings.refresh();
         const bin = cliPath();
         if (!bin) {
             const configured = vscode.workspace
@@ -50,12 +68,14 @@ export function activate(context: vscode.ExtensionContext): void {
                 .get<string>(CLI_PATH_SETTING, '')
                 .trim();
             statusBar.renderCliMissing(configured || undefined);
+            sidebar.refresh();
             return;
         }
 
         lastScope = currentScope(lastScope);
         lastState = resolver.resolve(lastScope?.dir, lastScope?.boundary);
         statusBar.render(lastState);
+        sidebar.refresh();
     };
 
     const invalidateAndRefresh = (): void => {
@@ -71,22 +91,104 @@ export function activate(context: vscode.ExtensionContext): void {
                 return;
             }
 
+            keybindings.refresh();
             await showMenu({
                 bin,
                 state: lastState,
                 output,
                 onContextChanged: invalidateAndRefresh,
                 getState: () => lastState,
+                chordFor,
             });
         }),
     );
 
+    /** Everything a menu action needs when it is run as a command. */
+    const menuDeps = (bin: string): MenuDeps => ({
+        bin,
+        state: lastState,
+        output,
+        onContextChanged: invalidateAndRefresh,
+        getState: () => lastState,
+        chordFor,
+    });
+
+    /**
+     * Run a menu action outside the popup.
+     *
+     * Scope is `lastState` — the file the user is looking at — which is exactly
+     * what the popup would have used. A project action with no project says so
+     * rather than guessing one.
+     */
+    const runAction = async (action: MenuAction): Promise<void> => {
+        const bin = cliPath();
+        if (!bin) {
+            await promptForCliPath();
+            return;
+        }
+
+        keybindings.refresh();
+
+        const popup = new PopupSession();
+        try {
+            if (action.needsProject && !(lastState.projectId && lastState.projectDir)) {
+                await showContextMessage(
+                    popup,
+                    action.title,
+                    '$(info) No synced project for this file',
+                    'Open a file inside a directory containing a .versori to enable project actions.',
+                );
+                return;
+            }
+
+            await action.run(menuDeps(bin), popup);
+        } catch (err) {
+            popup.close();
+            await reportError(output, err);
+        } finally {
+            popup.dispose();
+        }
+    };
+
+    // Explorer entries own their own registration below: they take a folder Uri.
+    const EXPLORER_COMMANDS = new Set([
+        CONTEXT_SYNC_COMMAND,
+        CONTEXT_DEPLOY_COMMAND,
+        CONTEXT_SAVE_COMMAND,
+    ]);
+
+    // These two touch no CLI and must stay reachable when the binary is missing —
+    // Show Output is how the user diagnoses that state, and Configure is the only
+    // way to reach the Keybindings editor once versori.showMenu has bailed.
+    const CLI_FREE_COMMANDS = new Set([
+        'versori.showOutput',
+        'versori.configureKeybindings',
+    ]);
+
+    for (const action of MENU_ACTIONS) {
+        if (EXPLORER_COMMANDS.has(action.command) || CLI_FREE_COMMANDS.has(action.command)) {
+            continue;
+        }
+        context.subscriptions.push(
+            vscode.commands.registerCommand(action.command, () => runAction(action)),
+        );
+    }
+
     context.subscriptions.push(
         vscode.commands.registerCommand('versori.showOutput', () => output.show(true)),
+        vscode.commands.registerCommand('versori.configureKeybindings', () =>
+            vscode.commands.executeCommand('workbench.action.openGlobalKeybindings', 'versori.'),
+        ),
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand(CONTEXT_SYNC_COMMAND, async (uri: vscode.Uri) => {
+        vscode.commands.registerCommand(CONTEXT_SYNC_COMMAND, async (uri?: vscode.Uri) => {
+            if (!uri) {
+                // Keyboard or Palette: same scope the popup would have used.
+                await runAction(actionFor(CONTEXT_SYNC_COMMAND)!);
+                return;
+            }
+
             const bin = cliPath();
             if (!bin) {
                 await promptForCliPath();
@@ -124,26 +226,34 @@ export function activate(context: vscode.ExtensionContext): void {
                 popup.dispose();
             }
         }),
-        vscode.commands.registerCommand(CONTEXT_DEPLOY_COMMAND, (uri: vscode.Uri) =>
-            runProjectContextForm(
+        vscode.commands.registerCommand(CONTEXT_DEPLOY_COMMAND, async (uri?: vscode.Uri) => {
+            if (!uri) {
+                await runAction(actionFor(CONTEXT_DEPLOY_COMMAND)!);
+                return;
+            }
+            await runProjectContextForm(
                 uri,
                 'Deploy project',
                 openDeployForm,
                 cliPath,
                 resolver,
                 output,
-            ),
-        ),
-        vscode.commands.registerCommand(CONTEXT_SAVE_COMMAND, (uri: vscode.Uri) =>
-            runProjectContextForm(
+            );
+        }),
+        vscode.commands.registerCommand(CONTEXT_SAVE_COMMAND, async (uri?: vscode.Uri) => {
+            if (!uri) {
+                await runAction(actionFor(CONTEXT_SAVE_COMMAND)!);
+                return;
+            }
+            await runProjectContextForm(
                 uri,
                 'Save version',
                 openSaveVersionForm,
                 cliPath,
                 resolver,
                 output,
-            ),
-        ),
+            );
+        }),
     );
 
     // --- invalidation sources -------------------------------------------------

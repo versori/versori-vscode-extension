@@ -1,7 +1,37 @@
 import { describe, expect, it } from 'vitest';
 
 import { RAW_PANE_SCRIPT } from '../webview/shell';
-import { LOGS_SCRIPT } from './html';
+import {
+    appendExpression,
+    fieldExpression,
+    fieldPrefixExpression,
+    messageExpression,
+} from './filter';
+import { toLogEntries } from './entries';
+import { LOGS_SCRIPT, renderLogsHtml, toWebviewEntries } from './html';
+
+describe('host-to-webview entry boundary', () => {
+    it('does not post the host-private digest or the secret value it contains', () => {
+        const secret = 'sk-live-boundary-secret';
+        const hostEntries = toLogEntries([
+            {
+                timestamp: '2026-08-12T20:00:00Z',
+                severity: 'INFO',
+                message: 'credential-shaped source record',
+                token: secret,
+            },
+        ]);
+
+        // This proves the source fixture exercises the leak: the exact
+        // occurrence identity intentionally contains the untouched secret.
+        expect(hostEntries[0].digest).toContain(secret);
+
+        const postedEntries = toWebviewEntries(hostEntries);
+        expect(postedEntries[0]).not.toHaveProperty('digest');
+        expect(JSON.stringify(postedEntries)).not.toContain(secret);
+        expect(postedEntries[0].raw.token).toBe('[redacted]');
+    });
+});
 
 /**
  * Executes `LOGS_SCRIPT` against a stubbed DOM, driving it through its real
@@ -28,8 +58,9 @@ interface StubNode {
     };
     appendChild(child: StubNode): void;
     querySelector(selector: string): StubNode | undefined;
-    addEventListener(name: string, fn: () => void): void;
-    fire(name: string): void;
+    setAttribute(name: string, value: string): void;
+    addEventListener(name: string, fn: (event?: unknown) => void): void;
+    fire(name: string, event?: unknown): void;
 }
 
 interface Chip {
@@ -45,15 +76,25 @@ interface TestPayload {
     controls: unknown[];
     controlValues: Record<string, unknown>;
     entries: Array<{
+        id: string;
         timestamp: string;
         rawTimestamp: string;
         severity: string;
         level?: string;
         message: string;
         fields: Array<{ key: string; value: string }>;
+        raw: Record<string, unknown>;
     }>;
-    fieldKeys: string[];
     severities: string[];
+    live: {
+        enabled: boolean;
+        updatedAt?: string;
+        error?: string;
+        warning?: string;
+        disabledReason?: string;
+    };
+    merged?: boolean;
+    added?: number;
     rawJson: string;
     error?: string;
 }
@@ -65,13 +106,17 @@ const ELEMENT_IDS = [
     'command',
     'raw',
     'controls',
-    'fieldPicker',
     'sevs',
     'count',
     'body',
     'include',
     'exclude',
     'caseSensitive',
+    'live',
+    'group',
+    'liveStatus',
+    'status',
+    'backTop',
     'refresh',
     'expandAll',
     'collapseAll',
@@ -79,7 +124,7 @@ const ELEMENT_IDS = [
 ];
 
 function makeNode(tag: string, all: StubNode[]): StubNode {
-    const listeners: Record<string, Array<() => void>> = {};
+    const listeners: Record<string, Array<(event?: unknown) => void>> = {};
     const classes = new Set<string>();
     let text = '';
 
@@ -132,11 +177,16 @@ function makeNode(tag: string, all: StubNode[]): StubNode {
             const want = selector.replace('.', '');
             return self.children.find((child) => child.classList.contains(want));
         },
-        addEventListener(name, fn) {
-            (listeners[name] ??= []).push(fn);
+        setAttribute(_name, _value) {
+            // aria-* and similar; the stub only needs the call not to throw.
         },
-        fire(name) {
-            (listeners[name] ?? []).forEach((fn) => fn());
+        addEventListener(name, fn) {
+            (listeners[name] ??= []).push(fn as (event?: unknown) => void);
+        },
+        fire(name, event) {
+            (listeners[name] ?? []).forEach((fn) =>
+                fn(event ?? { stopPropagation() {}, preventDefault() {} }),
+            );
         },
     };
 
@@ -144,9 +194,10 @@ function makeNode(tag: string, all: StubNode[]): StubNode {
     return self;
 }
 
-function harness() {
+function harness(options: { reducedMotion?: boolean } = {}) {
     const all: StubNode[] = [];
     const byId = new Map<string, StubNode>();
+    const documentListeners: Record<string, Array<(event: unknown) => void>> = {};
 
     for (const id of ELEMENT_IDS) {
         const element = makeNode('div', all);
@@ -159,15 +210,35 @@ function harness() {
         createElement: (tag: string) => makeNode(tag, all),
         querySelectorAll: (selector: string) =>
             all.filter((n) => n.classList.contains(selector.replace('.', ''))),
+        addEventListener(name: string, fn: (event: unknown) => void) {
+            (documentListeners[name] ??= []).push(fn);
+        },
     };
 
     const posted: Array<Record<string, unknown>> = [];
     let onMessage: ((event: { data: unknown }) => void) | undefined;
+    const windowListeners: Record<string, Array<(event: unknown) => void>> = {};
+
+    let scrollY = 0;
+    const scrolls: Array<{ top: number; behavior?: string }> = [];
+
     const windowStub = {
-        addEventListener(name: string, fn: (event: { data: unknown }) => void) {
+        get scrollY() {
+            return scrollY;
+        },
+        scrollTo(request: { top: number; behavior?: string }) {
+            scrolls.push(request);
+            scrollY = request.top;
+            // The real browser fires scroll after a programmatic scroll too, and
+            // the script's own scroll handler is what re-enables following.
+            (windowListeners.scroll ?? []).forEach((fn) => fn({}));
+        },
+        matchMedia: () => ({ matches: Boolean(options.reducedMotion) }),
+        addEventListener(name: string, fn: (event: unknown) => void) {
             if (name === 'message') {
-                onMessage = fn;
+                onMessage = fn as (event: { data: unknown }) => void;
             }
+            (windowListeners[name] ??= []).push(fn);
         },
     };
 
@@ -176,7 +247,6 @@ function harness() {
         'window',
         'acquireVsCodeApi',
         'renderControls',
-        'renderFieldPicker',
         // `RAW_PANE_SCRIPT` is concatenated rather than stubbed, exactly as
         // `htmlDocument` assembles a real panel — the raw pane's per-payload
         // reset is the behaviour under test below.
@@ -188,20 +258,161 @@ function harness() {
         // The shared shell scripts are exercised by shell.test.ts; here they only
         // need to exist, so the script under test can call them.
         () => {},
-        () => {},
     );
+
+    /** The action button inside the `dt` for `path`, or inside the `dd` that follows it. */
+    function fieldNode(rowIndex: number, path: string, which: 'dt' | 'dd'): StubNode {
+        const row = (byId.get('body') as StubNode).children[rowIndex];
+        const detail = row.children.find((child) => child.classList.contains('detail'));
+        const list = detail?.children[0];
+        const cells = list?.children ?? [];
+
+        const at = cells.findIndex(
+            (cell) => cell.tag === 'dt' && cell.children[0]?.textContent === path,
+        );
+        if (at === -1) {
+            throw new Error(`no field row for "${path}"`);
+        }
+
+        const cell = which === 'dt' ? cells[at] : cells[at + 1];
+        return cell.children[0];
+    }
+
+    function groupNode(message: string): StubNode {
+        const found = (byId.get('body') as StubNode).children.find(
+            (child) => child.dataset.key === message,
+        );
+        if (!found) {
+            throw new Error(`no group for "${message}"`);
+        }
+        return found;
+    }
 
     return {
         posted,
+        scrolls,
         node: (id: string) => byId.get(id) as StubNode,
         click(id: string) {
             (byId.get(id) as StubNode).fire('click');
+        },
+        scrollDown(pixels: number) {
+            scrollY = pixels;
+            (windowListeners.scroll ?? []).forEach((fn) => fn({}));
+        },
+        row(index: number) {
+            return (byId.get('body') as StubNode).children[index];
+        },
+        expandRow(index: number) {
+            const row = (byId.get('body') as StubNode).children[index];
+            (row.children.find((c) => c.classList.contains('head')) as StubNode).fire('click');
+        },
+        group(message: string) {
+            return groupNode(message);
+        },
+        groupHeads() {
+            return (byId.get('body') as StubNode).children
+                .filter((child) => child.classList.contains('group'))
+                .map((node) => {
+                    const head = node.children.find((c) =>
+                        c.classList.contains('head'),
+                    ) as StubNode;
+                    return {
+                        message: (head.children.find((c) => c.classList.contains('msg')) as StubNode)
+                            .textContent,
+                        severity: (head.children.find((c) => c.classList.contains('sev')) as StubNode)
+                            .textContent,
+                        count: (head.children.find((c) =>
+                            c.classList.contains('groupCount'),
+                        ) as StubNode).textContent,
+                        latest: (head.children.find((c) => c.classList.contains('ts')) as StubNode)
+                            .textContent,
+                    };
+                });
+        },
+        expandGroup(message: string) {
+            const group = groupNode(message);
+            (group.children.find((c) => c.classList.contains('head')) as StubNode).fire('click');
+        },
+        groupRow(message: string, index: number) {
+            const group = groupNode(message);
+            const detail = group.children.find((c) => c.classList.contains('detail')) as StubNode;
+            return detail.children.filter((c) => c.classList.contains('entry'))[index];
+        },
+        expandGroupRow(message: string, index: number) {
+            const row = groupNode(message).children
+                .find((c) => c.classList.contains('detail'))!
+                .children.filter((c) => c.classList.contains('entry'))[index];
+            (row.children.find((c) => c.classList.contains('head')) as StubNode).fire('click');
+        },
+        groupRowMessages(message: string) {
+            const detail = groupNode(message).children.find((c) =>
+                c.classList.contains('detail'),
+            ) as StubNode;
+            return detail.children
+                .filter((c) => c.classList.contains('entry'))
+                .map((row) => {
+                    const head = row.children.find((c) => c.classList.contains('head')) as StubNode;
+                    return (head.children.find((c) => c.classList.contains('msg')) as StubNode)
+                        .textContent;
+                });
+        },
+        groupRowTimestamps(message: string) {
+            const detail = groupNode(message).children.find((c) =>
+                c.classList.contains('detail'),
+            ) as StubNode;
+            return detail.children
+                .filter((c) => c.classList.contains('entry'))
+                .map((row) => {
+                    const head = row.children.find((c) => c.classList.contains('head')) as StubNode;
+                    return (head.children.find((c) => c.classList.contains('ts')) as StubNode)
+                        .textContent;
+                });
         },
         sendLogs(payload: TestPayload) {
             if (!onMessage) {
                 throw new Error('the script never registered a message listener');
             }
             onMessage({ data: { type: 'logs', payload } });
+        },
+        receive(data: unknown) {
+            if (!onMessage) {
+                throw new Error('the script never registered a message listener');
+            }
+            onMessage({ data });
+        },
+        pressEscape() {
+            (documentListeners.keydown ?? []).forEach((fn) => fn({ key: 'Escape' }));
+        },
+        documentClick() {
+            (documentListeners.click ?? []).forEach((fn) => fn({}));
+        },
+        fieldNameButton(row: number, path: string) {
+            return fieldNode(row, path, 'dt');
+        },
+        fieldValueButton(row: number, path: string) {
+            return fieldNode(row, path, 'dd');
+        },
+        /** The row-title button of row `n`. */
+        titleButton(n: number) {
+            const row = (byId.get('body') as StubNode).children[n];
+            const head = row.children.find((c) => c.classList.contains('head')) as StubNode;
+            return head.children.find((c) => c.classList.contains('msg')) as StubNode;
+        },
+        /** Labels of the currently open popover, in order. */
+        popoverLabels(): string[] {
+            return all
+                .filter((node) => node.classList.contains('pop'))
+                .flatMap((pop) => pop.children.map((item) => item.textContent));
+        },
+        clickPopover(label: string) {
+            const item = all
+                .filter((node) => node.classList.contains('pop'))
+                .flatMap((pop) => pop.children)
+                .find((child) => child.textContent === label);
+            if (!item) {
+                throw new Error(`no popover item labelled "${label}"`);
+            }
+            item.fire('click');
         },
         chips(): Chip[] {
             return (byId.get('sevs') as StubNode).children.map((chip) => ({
@@ -230,17 +441,89 @@ function payloadWith(severities: string[]): TestPayload {
         controlValues: {},
         entries: [
             {
+                id: 'aaaaaaaa#0',
                 timestamp: '2026-08-06 10:00:00',
                 rawTimestamp: '2026-08-06T10:00:00Z',
                 severity: severities[0] ?? 'info',
                 level: 'info',
                 message: 'workflow started',
                 fields: [{ key: 'fields.triggerName', value: 'get-pricing' }],
+                raw: { message: 'workflow started' },
             },
         ],
-        fieldKeys: ['fields.triggerName'],
         severities,
+        live: { enabled: false },
         rawJson: '[]',
+    };
+}
+
+/** Two entries sharing a title, so grouping has something to collapse. */
+function twoEntryPayload(): TestPayload {
+    const base = payloadWith(['error', 'info']);
+    return {
+        ...base,
+        entries: [
+            {
+                id: 'aaaaaaaa#1',
+                timestamp: '2026-08-06 10:00:01',
+                rawTimestamp: '2026-08-06T10:00:01Z',
+                severity: 'ERROR',
+                level: 'error',
+                message: 'fetch orders',
+                fields: [{ key: 'fields.triggerName', value: 'get-pricing' }],
+                raw: { message: 'fetch orders' },
+            },
+            {
+                id: 'aaaaaaaa#0',
+                timestamp: '2026-08-06 10:00:00',
+                rawTimestamp: '2026-08-06T10:00:00Z',
+                severity: 'INFO',
+                level: 'info',
+                message: 'fetch orders',
+                fields: [{ key: 'fields.triggerName', value: 'get-pricing' }],
+                raw: { message: 'fetch orders' },
+            },
+        ],
+    };
+}
+
+/** Newest WARN + older ERROR so copying indices[0] severity cannot fake "worst". */
+function worstVsNewestPayload(): TestPayload {
+    const base = payloadWith(['warn', 'error']);
+    return {
+        ...base,
+        entries: [
+            {
+                id: 'bbbbbbbb#1',
+                timestamp: '2026-08-06 11:00:01',
+                rawTimestamp: '2026-08-06T11:00:01Z',
+                severity: 'WARN',
+                level: 'warn',
+                message: 'sync stock',
+                fields: [{ key: 'fields.triggerName', value: 'get-pricing' }],
+                raw: { message: 'sync stock' },
+            },
+            {
+                id: 'bbbbbbbb#0',
+                timestamp: '2026-08-06 11:00:00',
+                rawTimestamp: '2026-08-06T11:00:00Z',
+                severity: 'ERROR',
+                level: 'error',
+                message: 'sync stock',
+                fields: [{ key: 'fields.triggerName', value: 'get-pricing' }],
+                raw: { message: 'sync stock' },
+            },
+        ],
+    };
+}
+
+function groupOfBoth() {
+    return {
+        message: 'fetch orders',
+        severity: 'ERROR',
+        level: 'error',
+        latest: '2026-08-06 10:00:01',
+        indices: [0, 1],
     };
 }
 
@@ -346,5 +629,600 @@ describe('the raw JSON pane (executed)', () => {
         view.click('toggleRaw');
 
         expect(view.node('raw').className).toContain('show');
+    });
+});
+
+describe('live and group controls (executed)', () => {
+    it('tells the host to start live mode when the checkbox is ticked', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.node('live').checked = true;
+        view.node('live').fire('change');
+
+        expect(view.posted.at(-1)).toEqual({ type: 'live', enabled: true });
+    });
+
+    it('re-requests the filter with the grouping flag when Group by title is ticked', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.node('group').checked = true;
+        view.node('group').fire('change');
+
+        expect(view.posted.at(-1)).toMatchObject({ type: 'filter', group: true });
+    });
+
+    it('shows the last update time while live', () => {
+        const view = harness();
+        const payload = payloadWith(['info']);
+        payload.live = { enabled: true, updatedAt: '10:31:02' };
+        view.sendLogs(payload);
+
+        expect(view.node('liveStatus').textContent).toContain('10:31:02');
+        expect(view.node('live').checked).toBe(true);
+    });
+
+    it('unticks the box and explains itself when the host reports live mode unavailable', () => {
+        const view = harness();
+        // Checkbox must start checked — otherwise expect(false) passes even when
+        // liveStatus() never syncs el('live').checked from the payload.
+        view.node('live').checked = true;
+        const payload = payloadWith(['info']);
+        payload.live = { enabled: false, disabledReason: 'Live logs needs a relative time range.' };
+        view.sendLogs(payload);
+
+        expect(view.node('live').checked).toBe(false);
+        expect(view.node('liveStatus').textContent).toContain('relative time range');
+    });
+
+    it('reports a poll failure without replacing the entries', () => {
+        const view = harness();
+        // Establish rows first — a single error-bearing payload cannot prove
+        // that a failed poll left previously rendered entries on screen.
+        // Two rows so a replace-with-one-placeholder bug cannot fake the count.
+        const first = payloadWith(['info']);
+        first.entries = [
+            first.entries[0]!,
+            { ...first.entries[0]!, id: 'bbbbbbbb#1', message: 'second line' },
+        ];
+        view.sendLogs(first);
+        const rowsBefore = view.node('body').children.length;
+        expect(rowsBefore).toBeGreaterThan(0);
+
+        const payload = payloadWith(['info']);
+        payload.entries = first.entries;
+        payload.live = { enabled: true, error: 'context deadline exceeded' };
+        view.sendLogs(payload);
+
+        expect(view.node('liveStatus').className).toContain('err');
+        expect(view.node('body').children.length).toBeGreaterThan(0);
+        expect(view.node('body').children.length).toBe(rowsBefore);
+    });
+
+    it('has no Fields picker left to render', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        expect(view.node('fieldPicker')).toBeUndefined();
+        // Harness ids alone cannot prove markup removal — pin the real HTML.
+        expect(renderLogsHtml('test-nonce')).not.toContain('id="fieldPicker"');
+    });
+});
+
+/**
+ * The stub DOM cannot model the HTML value sanitization algorithm, so the one
+ * thing that guarantees a multi-line filter survives is the element type itself.
+ */
+describe('the filter boxes', () => {
+    it('are textareas, because a text input strips the newlines the action menus append', () => {
+        const html = renderLogsHtml('test-nonce');
+
+        expect(html).toContain('<textarea id="include"');
+        expect(html).toContain('<textarea id="exclude"');
+        expect(html).not.toContain('id="include" placeholder');
+    });
+});
+
+describe('row title actions (executed)', () => {
+    it('opens a popover with copy and filter actions', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+
+        expect(view.popoverLabels()).toEqual([
+            'Copy',
+            'Copy JSON',
+            'Include',
+            'Exclude',
+            'Include prefix',
+            'Exclude prefix',
+        ]);
+    });
+
+    it('Include appends an exact quoted message expression and re-filters', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+
+        expect(view.node('include').value).toBe('message="workflow started"');
+        expect(view.posted.at(-1)).toMatchObject({
+            type: 'filter',
+            filter: { include: 'message="workflow started"' },
+        });
+    });
+
+    it('Exclude prefix appends the prefix form to the Exclude box, leaving Include alone', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Exclude prefix');
+
+        expect(view.node('exclude').value).toBe('message^="workflow started"');
+        expect(view.node('include').value).toBe('');
+    });
+
+    it('appends on a new line, preserving what the user typed', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.node('include').value = 'orders';
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+
+        expect(view.node('include').value).toBe('orders\nmessage="workflow started"');
+    });
+
+    it('ignores an exact duplicate, so clicking Include twice does not stack expressions', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+
+        expect(view.node('include').value).toBe('message="workflow started"');
+    });
+
+    it('asks the host to copy the message text', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Copy');
+
+        expect(view.posted.at(-1)).toEqual({
+            type: 'copy',
+            text: 'workflow started',
+            label: 'Message',
+        });
+    });
+
+    it('asks the host to copy this entry as redacted, two-space-indented JSON', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Copy JSON');
+
+        const posted = view.posted.at(-1) as { type: string; text: string };
+        expect(posted.type).toBe('copy');
+        expect(posted.text).toContain('\n  "message"');
+        expect(JSON.parse(posted.text)).toMatchObject({ message: 'workflow started' });
+    });
+
+    it('announces a completed copy in the polite status region', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.receive({ type: 'copied', label: 'Message' });
+
+        expect(view.node('status').textContent).toContain('Message copied');
+    });
+
+    it('reports a failed copy without clearing the popover state', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        expect(view.popoverLabels().length).toBeGreaterThan(0);
+
+        view.receive({ type: 'copied', label: 'Message', error: 'clipboard unavailable' });
+
+        expect(view.node('status').textContent).toContain('clipboard unavailable');
+        expect(view.popoverLabels().length).toBeGreaterThan(0);
+    });
+
+    it('closes the popover after an action, so the row is readable again', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+
+        expect(view.popoverLabels()).toEqual([]);
+    });
+
+    it('closes an open popover on Escape', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.titleButton(0).fire('click');
+        view.pressEscape();
+
+        expect(view.popoverLabels()).toEqual([]);
+    });
+});
+
+describe('field actions (executed)', () => {
+    it('offers path-scoped filters on a field value', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.fieldValueButton(0, 'fields.triggerName').fire('click');
+
+        expect(view.popoverLabels()).toEqual([
+            'Copy',
+            'Include',
+            'Exclude',
+            'Include value prefix',
+            'Exclude value prefix',
+        ]);
+
+        view.clickPopover('Include');
+        expect(view.node('include').value).toBe('fields.triggerName="get-pricing"');
+    });
+
+    it('offers field-path prefix filters on a field name', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.fieldNameButton(0, 'fields.triggerName').fire('click');
+
+        expect(view.popoverLabels()).toEqual([
+            'Copy field path',
+            'Include field prefix',
+            'Exclude field prefix',
+        ]);
+
+        view.clickPopover('Include field prefix');
+        expect(view.node('include').value).toBe('fields.triggerName.*');
+    });
+});
+
+/**
+ * The webview script is a template literal, not a module, so it re-implements
+ * the two-line serialise shapes. These pins compare the executed inline output
+ * to the host exports — not to a hardcoded expected string.
+ */
+describe('inline webview serialisers match filter.ts (executed)', () => {
+    it('quotes a message with comma, quote and newline the same way', () => {
+        const tricky = 'a, "b"\nc';
+        const view = harness();
+        const payload = payloadWith(['info']);
+        payload.entries[0]!.message = tricky;
+        view.sendLogs(payload);
+
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+        expect(view.node('include').value).toBe(messageExpression(tricky));
+
+        view.node('include').value = '';
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include prefix');
+        expect(view.node('include').value).toBe(messageExpression(tricky, true));
+    });
+
+    it('quotes a field value and path-prefix the same way', () => {
+        const tricky = 'x, "y"\nz';
+        const path = 'fields.triggerName';
+        const view = harness();
+        const payload = payloadWith(['info']);
+        payload.entries[0]!.fields = [{ key: path, value: tricky }];
+        view.sendLogs(payload);
+
+        view.fieldValueButton(0, path).fire('click');
+        view.clickPopover('Include');
+        expect(view.node('include').value).toBe(fieldExpression(path, tricky));
+
+        view.node('include').value = '';
+        view.fieldValueButton(0, path).fire('click');
+        view.clickPopover('Include value prefix');
+        expect(view.node('include').value).toBe(fieldExpression(path, tricky, true));
+
+        view.node('include').value = '';
+        view.fieldNameButton(0, path).fire('click');
+        view.clickPopover('Include field prefix');
+        expect(view.node('include').value).toBe(fieldPrefixExpression(path));
+    });
+
+    it('does not stack a duplicate Include when the value contains a comma', () => {
+        const message = 'a,b';
+        const fieldValue = 'x,y';
+        const path = 'fields.triggerName';
+        const view = harness();
+        const payload = payloadWith(['info']);
+        payload.entries[0]!.message = message;
+        payload.entries[0]!.fields = [{ key: path, value: fieldValue }];
+        view.sendLogs(payload);
+
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+        view.titleButton(0).fire('click');
+        view.clickPopover('Include');
+        const messageBox = view.node('include').value;
+        expect(messageBox).toBe(messageExpression(message));
+        expect(messageBox).toBe(
+            appendExpression(appendExpression('', messageExpression(message)), messageExpression(message)),
+        );
+
+        view.node('include').value = '';
+        view.fieldValueButton(0, path).fire('click');
+        view.clickPopover('Include');
+        view.fieldValueButton(0, path).fire('click');
+        view.clickPopover('Include');
+        const fieldBox = view.node('include').value;
+        expect(fieldBox).toBe(fieldExpression(path, fieldValue));
+        expect(fieldBox).toBe(
+            appendExpression(
+                appendExpression('', fieldExpression(path, fieldValue)),
+                fieldExpression(path, fieldValue),
+            ),
+        );
+    });
+});
+
+describe('live follow-scroll (executed)', () => {
+    it('follows new entries while parked at the top', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 2;
+        view.sendLogs(merged);
+
+        expect(view.scrolls.at(-1)).toMatchObject({ top: 0 });
+        expect(view.node('backTop').className).toContain('hidden');
+    });
+
+    it('stops following once the user scrolls down, and counts what arrived', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 3;
+        view.sendLogs(merged);
+
+        expect(view.scrolls.filter((s) => s.top === 0)).toHaveLength(0);
+        expect(view.node('backTop').textContent).toBe('3 new logs · Back to top');
+        expect(view.node('backTop').className).not.toContain('hidden');
+    });
+
+    it('accumulates the count across several polls', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+
+        for (const added of [2, 1]) {
+            const merged = payloadWith(['info']);
+            merged.merged = true;
+            merged.added = added;
+            view.sendLogs(merged);
+        }
+
+        expect(view.node('backTop').textContent).toBe('3 new logs · Back to top');
+    });
+
+    it('says "1 new log" for a single entry', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 1;
+        view.sendLogs(merged);
+
+        expect(view.node('backTop').textContent).toBe('1 new log · Back to top');
+    });
+
+    it('Back to top scrolls, clears the count and re-enables following', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 2;
+        view.sendLogs(merged);
+
+        view.click('backTop');
+
+        expect(view.scrolls.at(-1)).toMatchObject({ top: 0, behavior: 'smooth' });
+        expect(view.node('backTop').className).toContain('hidden');
+    });
+
+    it('follows again after Back to top, and clears pending on the next merge', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+        const first = payloadWith(['info']);
+        first.merged = true;
+        first.added = 2;
+        view.sendLogs(first);
+
+        view.click('backTop');
+        // Smooth scroll settles asynchronously in a real browser; re-evaluate
+        // atTop at the parked position the way a late scroll event would.
+        view.scrollDown(0);
+
+        const before = view.scrolls.length;
+        const second = payloadWith(['info']);
+        second.merged = true;
+        second.added = 1;
+        view.sendLogs(second);
+
+        expect(view.scrolls.slice(before).some((s) => s.top === 0)).toBe(true);
+        expect(view.node('backTop').className).toContain('hidden');
+        expect(view.node('backTop').textContent).toBe('');
+    });
+
+    it('does not animate under prefers-reduced-motion', () => {
+        const view = harness({ reducedMotion: true });
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 1;
+        view.sendLogs(merged);
+        view.click('backTop');
+
+        expect(view.scrolls.at(-1)).toMatchObject({ behavior: 'auto' });
+    });
+
+    it('resets the pending count on a replacement load, because the page is new', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.scrollDown(500);
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 2;
+        view.sendLogs(merged);
+
+        view.sendLogs(payloadWith(['info'])); // manual Refresh
+
+        expect(view.node('backTop').className).toContain('hidden');
+    });
+});
+
+describe('expanded rows across a payload (executed)', () => {
+    it('keeps a row expanded when the same entry comes back in a merge', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.expandRow(0);
+
+        const merged = payloadWith(['info']);
+        merged.merged = true;
+        merged.added = 0;
+        view.sendLogs(merged);
+
+        expect(view.row(0).className).toContain('open');
+    });
+
+    it('does not expand an unrelated entry that happens to land at the same position', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        view.expandRow(0);
+
+        const next = payloadWith(['info']);
+        next.entries[0] = { ...next.entries[0], id: 'other#0', message: 'different' };
+        next.merged = true;
+        view.sendLogs(next);
+
+        expect(view.row(0).className).not.toContain('open');
+    });
+
+    it('expands a row from its chevron button, so expansion is keyboard reachable', () => {
+        const view = harness();
+        view.sendLogs(payloadWith(['info']));
+        const head = view.row(0).children.find((c) => c.classList.contains('head'));
+        const twist = head!.children.find((c) => c.classList.contains('twist'));
+
+        expect(twist!.tag).toBe('button');
+        twist!.fire('click');
+        expect(view.row(0).className).toContain('open');
+    });
+});
+
+describe('grouped rendering (executed)', () => {
+    it('renders one row per group with its count, worst severity and latest time', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({
+            type: 'visible',
+            indices: [0, 1],
+            total: 2,
+            groups: [
+                {
+                    message: 'fetch orders',
+                    severity: 'ERROR',
+                    level: 'error',
+                    latest: '2026-08-06 10:00:01',
+                    indices: [0, 1],
+                },
+            ],
+        });
+
+        expect(view.groupHeads()).toEqual([
+            { message: 'fetch orders', severity: 'ERROR', count: '2', latest: '2026-08-06 10:00:01' },
+        ]);
+    });
+
+    it('shows the group worst severity even when the newest member is milder', () => {
+        const view = harness();
+        view.sendLogs(worstVsNewestPayload());
+        view.receive({
+            type: 'visible',
+            indices: [0, 1],
+            total: 2,
+            groups: [
+                {
+                    message: 'sync stock',
+                    severity: 'ERROR',
+                    level: 'error',
+                    latest: '2026-08-06 11:00:01',
+                    indices: [0, 1],
+                },
+            ],
+        });
+
+        expect(view.groupHeads()).toEqual([
+            { message: 'sync stock', severity: 'ERROR', count: '2', latest: '2026-08-06 11:00:01' },
+        ]);
+    });
+
+    it('reveals its instances newest-first when a group is expanded', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+        view.expandGroup('fetch orders');
+
+        expect(view.groupRowMessages('fetch orders')).toEqual(['fetch orders', 'fetch orders']);
+        // Timestamps differ; a reverse-index render still matches identical messages.
+        expect(view.groupRowTimestamps('fetch orders')).toEqual([
+            '2026-08-06 10:00:01',
+            '2026-08-06 10:00:00',
+        ]);
+    });
+
+    it('keeps each instance independently expandable with its own field actions', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+        view.expandGroup('fetch orders');
+        view.expandGroupRow('fetch orders', 1);
+
+        expect(view.groupRow('fetch orders', 1).className).toContain('open');
+        expect(view.groupRow('fetch orders', 0).className).not.toContain('open');
+    });
+
+    it('keeps a group open across a live merge', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+        view.expandGroup('fetch orders');
+
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+
+        expect(view.group('fetch orders').className).toContain('open');
+    });
+
+    it('returns to the flat list when grouping is switched off', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+        view.receive({ type: 'visible', indices: [0, 1], total: 2 });
+
+        expect(view.groupHeads()).toEqual([]);
+        expect(view.node('body').children.filter((c) => c.classList.contains('entry'))).toHaveLength(2);
+    });
+
+    it('counts groups as well as entries', () => {
+        const view = harness();
+        view.sendLogs(twoEntryPayload());
+        view.receive({ type: 'visible', indices: [0, 1], total: 2, groups: [groupOfBoth()] });
+
+        expect(view.node('count').textContent).toBe('1 group · 2 entries');
     });
 });

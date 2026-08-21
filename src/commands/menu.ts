@@ -1,19 +1,25 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
+import { showActivationsPanel } from '../activations/panel';
+import { showConnectorsPanel } from '../connectors/panel';
 import { CliError, run, runJson } from '../cli';
 import { parseContextList } from '../contexts';
 import { resolveEnvironmentNames } from '../environments';
 import { openDeployForm, openSaveVersionForm } from '../forms/panel';
 import { showIssuesPanel } from '../issues/panel';
 import { showKvPanel } from '../kv/panel';
+import { showKvStoresPanel } from '../kv/stores-panel';
 import { showLogPanel } from '../logs/panel';
 import { ResolvedState } from '../resolver/types';
 import { openResourcesForm } from '../resources/panel';
 import { ENVIRONMENT_ID, environmentArgs, environmentControl } from '../results/controls';
 import { showResults } from '../results/panel';
 import { openSyncForm } from '../sync/panel';
+import { showVariablesPanel } from '../variables/panel';
 import { POPUP_BACK, PopupSession } from '../forms/popup';
+import { appendChord } from '../keybindings/format';
+import { MenuRow, menuLayout } from './layout';
 import { projectArgs } from './target';
 
 export interface MenuDeps {
@@ -26,16 +32,17 @@ export interface MenuDeps {
     onContextChanged: () => void;
     /** Reads the latest resolver state before the root menu is rendered. */
     getState: () => ResolvedState;
+    /** Chord the user bound to a command, already pretty-printed. */
+    chordFor: (command: string) => string | undefined;
 }
 
 interface ActionItem extends vscode.QuickPickItem {
     run?: (deps: MenuDeps, popup: PopupSession) => Promise<'menu' | 'close'>;
 }
 
-const SEPARATOR: ActionItem = {
-    label: '',
-    kind: vscode.QuickPickItemKind.Separator,
-};
+function section(label: string): ActionItem {
+    return { label, kind: vscode.QuickPickItemKind.Separator };
+}
 
 export async function showMenu(deps: MenuDeps): Promise<void> {
     const popup = new PopupSession();
@@ -60,7 +67,7 @@ export async function showMenu(deps: MenuDeps): Promise<void> {
                 }
             } catch (err) {
                 popup.close();
-                await reportError(menuDeps, err);
+                await reportError(menuDeps.output, err);
                 return;
             }
         }
@@ -77,85 +84,219 @@ function menuTitle(state: ResolvedState): string {
     return `Versori — ${state.contextName}${project}`;
 }
 
-function buildItems(deps: MenuDeps): ActionItem[] {
-    const inProject = Boolean(deps.state.projectId && deps.state.projectDir);
-    const items: ActionItem[] = [];
+/**
+ * One menu action: a QuickPick row *and* a bindable command.
+ *
+ * The registry is the single source of truth. `buildItems` renders it into the
+ * popup and `extension.ts` registers a command per entry from the same list,
+ * so keyboard, Command Palette, and popup always run identical code.
+ */
+export interface MenuAction {
+    /** Command id, stable forever — users bind these. */
+    command: string;
+    /** Human name; the Palette shows `Versori: <title>`. */
+    title: string;
+    /** QuickPick label, including its `$(icon)`. */
+    label: string;
+    description?: string | ((state: ResolvedState) => string | undefined);
+    /** Needs a resolved project; without one the command reports it and stops. */
+    needsProject: boolean;
+    run: (deps: MenuDeps, popup: PopupSession) => Promise<'menu' | 'close'>;
+}
 
-    if (inProject) {
-        items.push(
-            {
-                label: '$(rocket) Deploy...',
-                description: 'dry run by default',
-                run: (deps, popup) => openDeployForm(deps, popup),
-            },
-            {
-                label: '$(save) Save version...',
-                description: 'checkpoint only — does not deploy',
-                run: (deps, popup) => openSaveVersionForm(deps, popup),
-            },
-            {
-                label: '$(dashboard) Resources...',
-                description: 'CPU, memory, replicas, static IP',
-                run: (deps, popup) => openResourcesForm(deps, popup),
-            },
-            SEPARATOR,
-            { label: '$(output) Logs', run: showLogs },
-            { label: '$(warning) Issues', run: showIssues },
-            { label: '$(plug) Connectors', run: showConnectors },
-            {
-                label: '$(key) Static connections',
-                description: 'connections bound to an environment',
-                run: showStaticConnections,
-            },
-            {
-                label: '$(database) KV entries',
-                description: 'read-only',
-                run: showKvEntries,
-            },
-            { label: '$(history) Versions', run: showVersions },
-        );
-    } else {
-        items.push(
-            {
-                label: '$(info) No synced project for this file',
-                detail: 'Open a file inside a directory containing a .versori to enable project actions.',
-            },
-            SEPARATOR,
-        );
-    }
-
-    items.push({
+export const MENU_ACTIONS: MenuAction[] = [
+    {
+        command: 'versori.deployProject',
+        title: 'Deploy Project',
+        label: '$(rocket) Deploy...',
+        description: 'dry run by default',
+        needsProject: true,
+        run: (deps, popup) => openDeployForm(deps, popup),
+    },
+    {
+        command: 'versori.saveVersion',
+        title: 'Save Version',
+        label: '$(save) Save version...',
+        description: 'checkpoint only — does not deploy',
+        needsProject: true,
+        run: (deps, popup) => openSaveVersionForm(deps, popup),
+    },
+    {
+        command: 'versori.syncProjectHere',
+        title: 'Sync',
         label: '$(cloud-download) Sync...',
         description: 'pull remote files — dry run by default',
+        needsProject: false,
         run: openSyncForm,
-    });
-    items.push(SEPARATOR);
-    items.push({
+    },
+    {
+        command: 'versori.showVersions',
+        title: 'Versions',
+        label: '$(history) Versions',
+        needsProject: true,
+        run: showVersions,
+    },
+    {
+        command: 'versori.resources',
+        title: 'Resources',
+        label: '$(dashboard) Resources...',
+        description: 'CPU/memory/storage sliders, scaling, static IP',
+        needsProject: true,
+        run: (deps, popup) => openResourcesForm(deps, popup),
+    },
+    {
+        command: 'versori.kvEntries',
+        title: 'KV Entries',
+        label: '$(database) KV entries',
+        description: 'read, set, edit, delete, and wipe with confirmation',
+        needsProject: true,
+        run: showKvEntries,
+    },
+    {
+        command: 'versori.kvStores',
+        title: 'KV Stores',
+        label: '$(database) KV stores',
+        description: 'organisation-wide, grouped by project when possible',
+        needsProject: false,
+        run: showKvStores,
+    },
+    {
+        command: 'versori.connectors',
+        title: 'Connectors',
+        label: '$(plug) Connectors',
+        needsProject: true,
+        run: showConnectors,
+    },
+    {
+        command: 'versori.staticConnections',
+        title: 'Static Connections',
+        label: '$(key) Static connections',
+        description: 'connections bound to an environment',
+        needsProject: true,
+        run: showStaticConnections,
+    },
+    {
+        command: 'versori.connections',
+        title: 'Connections',
         label: '$(plug) Connections',
         description: 'organisation-wide',
+        needsProject: false,
         run: showConnections,
-    });
-    items.push({
-        label: '$(database) KV stores',
-        description: 'organisation-wide',
-        run: showKvStores,
-    });
-    items.push(SEPARATOR);
-    items.push({
+    },
+    {
+        command: 'versori.activations',
+        title: 'Activations',
+        label: '$(organization) Activations',
+        description: 'users, activation connections, and runtime variables',
+        needsProject: true,
+        run: showActivations,
+    },
+    {
+        command: 'versori.variables',
+        title: 'Variables',
+        label: '$(symbol-variable) Variables',
+        description: 'project activation-variable schema',
+        needsProject: true,
+        run: showVariables,
+    },
+    {
+        command: 'versori.logs',
+        title: 'Logs',
+        label: '$(output) Logs',
+        needsProject: true,
+        run: showLogs,
+    },
+    {
+        command: 'versori.issues',
+        title: 'Issues',
+        label: '$(warning) Issues',
+        needsProject: true,
+        run: showIssues,
+    },
+    {
+        command: 'versori.switchContext',
+        title: 'Switch Context',
         label: '$(gear) Switch context...',
-        description: deps.state.activeContextName ?? 'none active',
+        description: (state) => state.activeContextName ?? 'none active',
+        needsProject: false,
         run: switchContext,
-    });
-    items.push({
+    },
+    {
+        command: 'versori.showOutput',
+        title: 'Show Output',
         label: '$(list-flat) Show output log',
-        run: async (d, popup) => {
+        needsProject: false,
+        run: async (deps, popup) => {
             popup.close();
-            d.output.show(true);
+            deps.output.show(true);
             return 'close';
         },
-    });
+    },
+    {
+        command: 'versori.configureKeybindings',
+        title: 'Configure Keyboard Shortcuts',
+        label: '$(keyboard) Configure keyboard shortcuts',
+        needsProject: false,
+        run: configureKeybindings,
+    },
+];
 
-    return items;
+const ACTIONS_BY_COMMAND = new Map(MENU_ACTIONS.map((action) => [action.command, action]));
+
+export function actionFor(command: string): MenuAction | undefined {
+    return ACTIONS_BY_COMMAND.get(command);
+}
+
+function buildItems(deps: MenuDeps): ActionItem[] {
+    const inProject = Boolean(deps.state.projectId && deps.state.projectDir);
+
+    return menuLayout(inProject).flatMap((row) => {
+        const item = rowItem(row, deps);
+        return item ? [item] : [];
+    });
+}
+
+function rowItem(row: MenuRow, deps: MenuDeps): ActionItem | undefined {
+    if (row.kind === 'section') {
+        return section(row.label);
+    }
+
+    if (row.kind === 'notice') {
+        return {
+            label: '$(info) No synced project for this file',
+            detail: 'Open a file inside a directory containing a .versori to enable project actions.',
+        };
+    }
+
+    const action = actionFor(row.command);
+    if (!action) {
+        return undefined;
+    }
+
+    const described =
+        typeof action.description === 'function'
+            ? action.description(deps.state)
+            : action.description;
+
+    return {
+        label: action.label,
+        description: appendChord(described, deps.chordFor(action.command)),
+        run: action.run,
+    };
+}
+
+/**
+ * Open the Keybindings editor filtered to this extension's commands.
+ *
+ * Settings (`@ext:`) is deliberately not used: that page cannot assign keys.
+ */
+async function configureKeybindings(
+    _deps: MenuDeps,
+    popup: PopupSession,
+): Promise<'menu' | 'close'> {
+    popup.close();
+    await vscode.commands.executeCommand('workbench.action.openGlobalKeybindings', 'versori.');
+    return 'close';
 }
 
 /* ------------------------------------------------------------------ views */
@@ -182,6 +323,26 @@ async function showIssues(deps: MenuDeps, popup: PopupSession): Promise<'menu' |
     return 'close';
 }
 
+async function showActivations(
+    deps: MenuDeps,
+    popup: PopupSession,
+): Promise<'menu' | 'close'> {
+    popup.close();
+    const environments = await resolveEnvironmentNames(deps);
+    if (!environments) {
+        return 'menu';
+    }
+
+    await showActivationsPanel(deps, environments);
+    return 'close';
+}
+
+async function showVariables(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
+    popup.close();
+    await showVariablesPanel(deps);
+    return 'close';
+}
+
 /**
  * Connectors for an environment.
  *
@@ -196,14 +357,7 @@ async function showConnectors(deps: MenuDeps, popup: PopupSession): Promise<'men
         return 'menu';
     }
 
-    await showResults(deps, {
-        id: 'connectors',
-        heading: (values) => `Connectors · ${values[ENVIRONMENT_ID]}`,
-        baseArgs: ['projects', 'systems', 'list', ...projectArgs(deps.state)],
-        controls: [environmentControl(environments)],
-        controlArgs: environmentArgs,
-        preferred: ['name', 'id', 'templateBaseUrl'],
-    });
+    await showConnectorsPanel(deps, environments);
     return 'close';
 }
 
@@ -241,11 +395,7 @@ async function showVersions(deps: MenuDeps, popup: PopupSession): Promise<'menu'
 }
 
 /**
- * KV entries for a scope. Read-only.
- *
- * `kv set` / `delete` / `wipe` are deliberately absent: they mutate live
- * workflow state and belong in the terminal, where their confirmation prompts
- * are. See README.md.
+ * KV entries for a scope, including host-confirmed mutations.
  */
 async function showKvEntries(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
     popup.close();
@@ -258,15 +408,10 @@ async function showKvEntries(deps: MenuDeps, popup: PopupSession): Promise<'menu
     return 'close';
 }
 
-/** KV stores in the organisation. Store ids feed the CLI's raw `--store` mode. */
+/** KV stores in the organisation, grouped by project name when possible. */
 async function showKvStores(deps: MenuDeps, popup: PopupSession): Promise<'menu' | 'close'> {
     popup.close();
-    await showResults(deps, {
-        id: 'kvStores',
-        heading: () => 'KV stores',
-        baseArgs: ['kv', 'stores', 'list'],
-        preferred: ['name', 'id', 'createdAt'],
-    });
+    await showKvStoresPanel(deps);
     return 'close';
 }
 
@@ -337,21 +482,24 @@ async function switchContext(
     return 'close';
 }
 
-async function reportError(deps: MenuDeps, err: unknown): Promise<void> {
+export async function reportError(
+    output: vscode.OutputChannel,
+    err: unknown,
+): Promise<void> {
     const message = err instanceof CliError ? err.stderr || err.message : String(err);
 
     if (err instanceof CliError) {
-        deps.output.appendLine(`$ versori ${err.argv.join(' ')}`);
+        output.appendLine(`$ versori ${err.argv.join(' ')}`);
     }
-    deps.output.appendLine(message);
-    deps.output.appendLine('');
+    output.appendLine(message);
+    output.appendLine('');
 
     const action = await vscode.window.showErrorMessage(
         `Versori: ${firstLine(message)}`,
         'Show output',
     );
     if (action === 'Show output') {
-        deps.output.show(true);
+        output.show(true);
     }
 }
 

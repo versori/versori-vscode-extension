@@ -41,6 +41,8 @@ export interface CommandSpec {
      * project that pins a different one they query the wrong org and 404.
      */
     context?: string;
+    /** Cancels the child process when the owning panel is retargeted or closed. */
+    signal?: AbortSignal;
 }
 
 /**
@@ -124,6 +126,7 @@ export async function run(bin: string, spec: CommandSpec): Promise<CliResult> {
             cwd: spec.cwd,
             maxBuffer: MAX_BUFFER,
             timeout: DEFAULT_TIMEOUT_MS,
+            signal: spec.signal,
         });
         return { stdout, stderr };
     } catch (err) {
@@ -180,8 +183,9 @@ export function parseNdjson(text: string): unknown[] | undefined {
  */
 export async function runJson<T>(bin: string, spec: CommandSpec): Promise<T | undefined> {
     const { stdout } = await run(bin, { ...spec, json: true });
+    const trimmed = stdout.trim();
 
-    if (!stdout.trim()) {
+    if (!trimmed || trimmed === '(no items)') {
         return undefined;
     }
 

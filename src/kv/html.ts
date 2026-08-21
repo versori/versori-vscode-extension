@@ -37,7 +37,7 @@ export interface KvCountMessage {
 }
 
 /**
- * KV browser. Read-only.
+ * KV browser with confirmed set / delete / wipe actions.
  *
  * One expandable entry per row: the key and its createdAt collapsed, the stored
  * value plus TTL and versionstamp on expand. The value is off-screen by default
@@ -45,8 +45,9 @@ export interface KvCountMessage {
  * protection here, because a KV entry's field names are literally `key` and
  * `value`, so the branch's key-name redaction has nothing to match on.
  *
- * `kv set` / `delete` / `wipe` are deliberately absent: they mutate live
- * workflow state and stay in the terminal with their safety prompts.
+ * Mutations never happen in the webview: it only posts intents (key / action).
+ * The extension host collects values via InputBox, confirms with a modal, and
+ * runs the CLI with `--yes` / `--confirm`.
  */
 export function renderKvHtml(nonce: string): string {
     return htmlDocument({
@@ -66,7 +67,9 @@ const KV_CSS = `
   }
   .detail dd.val { white-space: pre-wrap; }
   .note { color: var(--vscode-descriptionForeground); font-size: 0.85em; margin: 0 0 12px; }
-  .paging { display: flex; gap: 8px; align-items: center; margin-top: 16px; }
+  .paging { display: flex; gap: 8px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+  .row-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .row-actions button { font-size: 0.88em; padding: 3px 10px; }
   button:disabled { opacity: 0.45; cursor: default; }
   button:disabled:hover { background: var(--vscode-button-secondaryBackground); }
 `;
@@ -83,6 +86,8 @@ const KV_BODY = `
     <span class="count" id="count"></span>
     <button id="expandAll">Expand all</button>
     <button id="toggleRaw">Raw JSON (all values)</button>
+    <button id="setEntry">Set entry</button>
+    <button id="wipePrefix">Wipe prefix</button>
     <button id="refresh">Refresh</button>
   </div>
 
@@ -90,7 +95,8 @@ const KV_BODY = `
     The filter box searches <strong>only the entries loaded on this page</strong> —
     <code>kv list</code> has no server-side search. Narrow with <strong>Key prefix</strong>,
     or walk the store with <strong>Next</strong>. Entries come back newest first by internal
-    id, not by key.
+    id, not by key. Values stay collapsed until you expand a row. Set / Edit / Delete / Wipe
+    ask the host to confirm before calling the CLI.
   </p>
 
   <div id="body"></div>
@@ -114,6 +120,7 @@ export const KV_SCRIPT = `
 (function () {
   const vscode = acquireVsCodeApi();
   const el = (id) => document.getElementById(id);
+  if (typeof wireNav === 'function') { wireNav(vscode); }
 
   let payload = null;
   let controlValues = {};
@@ -163,6 +170,17 @@ export const KV_SCRIPT = `
     node.className = className;
     node.textContent = text;
     host.appendChild(node);
+  }
+
+  function actionButton(label, type, key) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.addEventListener('click', (event) => {
+      if (event && event.stopPropagation) { event.stopPropagation(); }
+      vscode.postMessage({ type: type, key: key });
+    });
+    return button;
   }
 
   function renderEntries() {
@@ -241,6 +259,13 @@ export const KV_SCRIPT = `
       addField(list, 'created', entry.rawCreatedAt);
       addField(list, 'versionstamp', entry.versionstamp);
       detail.appendChild(list);
+
+      const actions = document.createElement('div');
+      actions.className = 'row-actions';
+      actions.appendChild(actionButton('Edit', 'edit', entry.key));
+      actions.appendChild(actionButton('Delete', 'delete', entry.key));
+      detail.appendChild(actions);
+
       row.appendChild(detail);
 
       body.appendChild(row);
@@ -278,6 +303,13 @@ export const KV_SCRIPT = `
   // Filtering is local to the loaded page, so it never re-runs the CLI.
   el('filter').addEventListener('input', () => { if (payload) { renderEntries(); } });
   el('refresh').addEventListener('click', apply);
+
+  el('setEntry').addEventListener('click', () => {
+    vscode.postMessage({ type: 'set', controls: controlValues });
+  });
+  el('wipePrefix').addEventListener('click', () => {
+    vscode.postMessage({ type: 'wipe', controls: controlValues });
+  });
 
   el('expandAll').addEventListener('click', () => {
     allOpen = !allOpen;

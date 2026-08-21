@@ -1,0 +1,289 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+    activationControls,
+    buildActivationCreateArgs,
+    buildActivationDeleteArgs,
+    buildActivationDetailsArgs,
+    buildActivationListArgs,
+    buildConnectionsListArgs,
+    buildEndUserConnectionsListArgs,
+    buildSchemaListArgs,
+    buildSetVariableArgs,
+    buildSystemsListArgs,
+    buildUserCreateArgs,
+    buildUserDeleteArgs,
+    buildVersionsDeployArgs,
+    formatConnectionFlag,
+    formatVariableFlag,
+    mergePickedWithStaticConnections,
+} from './args';
+
+describe('activationControls', () => {
+    it('offers an environment picker', () => {
+        expect(activationControls(['production', 'staging']).map((c) => c.id)).toEqual([
+            'environment',
+        ]);
+    });
+});
+
+describe('list / details / delete args', () => {
+    it('lists activations for the selected environment', () => {
+        expect(buildActivationListArgs({ environment: 'production' })).toEqual([
+            'projects',
+            'activations',
+            'list',
+            '--environment',
+            'production',
+        ]);
+    });
+
+    it('builds details and delete argv with external id', () => {
+        expect(buildActivationDetailsArgs('production', 'acme')).toEqual([
+            'projects',
+            'activations',
+            'details',
+            '--environment',
+            'production',
+            '--external-id',
+            'acme',
+        ]);
+        expect(buildActivationDeleteArgs('production', 'acme')).toEqual([
+            'projects',
+            'activations',
+            'delete',
+            '--environment',
+            'production',
+            '--external-id',
+            'acme',
+        ]);
+    });
+
+    it('rejects blank environment or external id', () => {
+        expect(() => buildActivationDetailsArgs('', 'acme')).toThrow(/environment/);
+        expect(() => buildActivationDeleteArgs('production', '  ')).toThrow(/external id/);
+    });
+});
+
+describe('user create args', () => {
+    it('passes display name and external id', () => {
+        expect(
+            buildUserCreateArgs({ displayName: 'Acme', externalId: 'acme' }),
+        ).toEqual([
+            'users',
+            'create',
+            '--display-name',
+            'Acme',
+            '--external-id',
+            'acme',
+        ]);
+    });
+
+    it('rejects blank identity fields', () => {
+        expect(() => buildUserCreateArgs({ displayName: '', externalId: 'acme' })).toThrow(
+            /display name/,
+        );
+        expect(() => buildUserCreateArgs({ displayName: 'Acme', externalId: '' })).toThrow(
+            /external id/,
+        );
+    });
+});
+
+describe('user delete args', () => {
+    it('deletes by platform user id with --yes so execFile never waits on a TTY', () => {
+        expect(buildUserDeleteArgs({ userId: '01USER' })).toEqual([
+            'users',
+            'delete',
+            '--id',
+            '01USER',
+            '--yes',
+        ]);
+    });
+
+    it('falls back to --external-id when the list row has no user id', () => {
+        expect(buildUserDeleteArgs({ externalId: 'testtest' })).toEqual([
+            'users',
+            'delete',
+            '--external-id',
+            'testtest',
+            '--yes',
+        ]);
+    });
+
+    it('prefers the ULID over the external id', () => {
+        expect(buildUserDeleteArgs({ userId: '01USER', externalId: 'testtest' })).toEqual([
+            'users',
+            'delete',
+            '--id',
+            '01USER',
+            '--yes',
+        ]);
+    });
+
+    it('rejects a blank identity', () => {
+        expect(() => buildUserDeleteArgs({})).toThrow(/user/);
+        expect(() => buildUserDeleteArgs({ userId: '  ' })).toThrow(/user/);
+    });
+});
+
+describe('activation create args', () => {
+    it('emits every --connection and --variable flag so the CLI stays non-interactive', () => {
+        expect(
+            buildActivationCreateArgs({
+                environment: 'production',
+                externalId: 'acme',
+                connections: [
+                    { templateId: '01TPL', connectionId: '01CONN' },
+                    { templateId: '01TPL2', connectionId: '01CONN2' },
+                ],
+                variables: [
+                    { name: 'tenant', value: '"acme"' },
+                    { name: 'enabled', value: 'true' },
+                ],
+            }),
+        ).toEqual([
+            'projects',
+            'activations',
+            'create',
+            '--environment',
+            'production',
+            '--external-id',
+            'acme',
+            '--connection',
+            '01TPL=01CONN',
+            '--connection',
+            '01TPL2=01CONN2',
+            '--variable',
+            'tenant="acme"',
+            '--variable',
+            'enabled=true',
+        ]);
+    });
+
+    it('refuses to create without connections — that path would open a TUI', () => {
+        expect(() =>
+            buildActivationCreateArgs({
+                environment: 'production',
+                externalId: 'acme',
+                connections: [],
+                variables: [],
+            }),
+        ).toThrow(/connection/);
+    });
+});
+
+describe('set-variable args', () => {
+    it('allows a blank value so dismissal stays distinct from empty string', () => {
+        expect(
+            buildSetVariableArgs({
+                environment: 'production',
+                externalId: 'acme',
+                name: 'note',
+                value: '',
+            }),
+        ).toEqual([
+            'projects',
+            'activations',
+            'set-variable',
+            '--environment',
+            'production',
+            '--external-id',
+            'acme',
+            '--name',
+            'note',
+            '--value',
+            '',
+        ]);
+    });
+});
+
+describe('enumeration helpers', () => {
+    it('lists systems for an environment', () => {
+        expect(buildSystemsListArgs('production')).toEqual([
+            'projects',
+            'systems',
+            'list',
+            '--environment',
+            'production',
+        ]);
+    });
+
+    it('lists connections, optionally scoped to an end-user for dynamic systems', () => {
+        expect(buildConnectionsListArgs('01SYS')).toEqual([
+            'connections',
+            'list',
+            '--system',
+            '01SYS',
+        ]);
+        expect(buildConnectionsListArgs('01SYS', 'acme')).toEqual([
+            'connections',
+            'list',
+            '--system',
+            '01SYS',
+            '--end-user',
+            'acme',
+        ]);
+        expect(buildEndUserConnectionsListArgs('acme')).toEqual([
+            'connections',
+            'list',
+            '--end-user',
+            'acme',
+        ]);
+        expect(() => buildEndUserConnectionsListArgs('  ')).toThrow(/end user/);
+    });
+
+    it('lists the project variable schema', () => {
+        expect(buildSchemaListArgs()).toEqual(['projects', 'variables', 'list']);
+    });
+
+    it('redeploys an existing version without uploading local files', () => {
+        expect(buildVersionsDeployArgs('production', '01VER')).toEqual([
+            'projects',
+            'versions',
+            'deploy',
+            '--environment',
+            'production',
+            '--version-id',
+            '01VER',
+        ]);
+        expect(() => buildVersionsDeployArgs('', '01VER')).toThrow(/environment/);
+        expect(() => buildVersionsDeployArgs('production', '  ')).toThrow(/version/);
+    });
+});
+
+describe('flag formatters', () => {
+    it('formats connection and variable pairs', () => {
+        expect(formatConnectionFlag('01TPL', '01CONN')).toBe('01TPL=01CONN');
+        expect(formatVariableFlag('tenant', 'acme')).toBe('tenant=acme');
+    });
+
+    it('rejects malformed pairs', () => {
+        expect(() => formatConnectionFlag('', '01CONN')).toThrow();
+        expect(() => formatVariableFlag('bad=name', 'x')).toThrow(/=/);
+    });
+});
+
+describe('mergePickedWithStaticConnections', () => {
+    it('appends static system connections the UI does not show', () => {
+        expect(
+            mergePickedWithStaticConnections(
+                [{ templateId: '01TPL_EBAY', connectionId: '01CONN_EBAY' }],
+                [
+                    { templateId: '01TPL_EBAY', dynamic: true, connectionId: 'ignored' },
+                    { templateId: '01TPL_PG', dynamic: false, connectionId: '01CONN_PG' },
+                ],
+            ),
+        ).toEqual([
+            { templateId: '01TPL_EBAY', connectionId: '01CONN_EBAY' },
+            { templateId: '01TPL_PG', connectionId: '01CONN_PG' },
+        ]);
+    });
+
+    it('skips static systems that have no connection id', () => {
+        expect(
+            mergePickedWithStaticConnections([], [
+                { templateId: '01TPL_PG', dynamic: false, connectionId: '' },
+            ]),
+        ).toEqual([]);
+    });
+});

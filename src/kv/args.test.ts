@@ -2,10 +2,22 @@ import { describe, expect, it } from 'vitest';
 
 import {
     buildKvCountArgs,
+    buildKvDeleteArgs,
     buildKvListArgs,
+    buildKvScopeArgs,
+    buildKvSetArgs,
+    buildKvTargetArgs,
+    buildKvWipeArgs,
+    encodeKvValue,
+    effectiveKvLimit,
+    isKvMessageTooLarge,
     KV_SCOPES,
     kvControls,
+    kvPrefixSegments,
+    shouldRetryKvListWithLimitOne,
+    validateKvKey,
     validateKvScope,
+    validateKvWipePrefix,
 } from './args';
 
 const base = {
@@ -28,6 +40,53 @@ describe('KV_SCOPES', () => {
             'user',
             'execution',
         ]);
+    });
+});
+
+describe('isKvMessageTooLarge', () => {
+    it('matches the platform gRPC size rejection', () => {
+        expect(
+            isKvMessageTooLarge(
+                'API Message: grpc: received message larger than max (11825726 vs. 4194304)',
+            ),
+        ).toBe(true);
+    });
+
+    it('ignores unrelated list failures', () => {
+        expect(isKvMessageTooLarge('failed to list KV entries\nstore not found')).toBe(false);
+    });
+});
+
+describe('effectiveKvLimit', () => {
+    it('returns 0 when the flag would be omitted', () => {
+        expect(effectiveKvLimit({ ...base, limit: 0 })).toBe(0);
+    });
+
+    it('caps at the server maximum of 100', () => {
+        expect(effectiveKvLimit({ ...base, limit: 500 })).toBe(100);
+    });
+});
+
+describe('shouldRetryKvListWithLimitOne', () => {
+    const oversized =
+        'Message:\n  failed to list KV entries\nReason:\n  API Message: grpc: received message larger than max (11825726 vs. 4194304)';
+
+    it('retries when a larger page hit the size ceiling', () => {
+        expect(shouldRetryKvListWithLimitOne({ ...base, limit: 50 }, oversized)).toBe(true);
+    });
+
+    it('retries when the server default (no --limit) hit the ceiling', () => {
+        expect(shouldRetryKvListWithLimitOne({ ...base, limit: 0 }, oversized)).toBe(true);
+    });
+
+    it('does not retry when already at --limit 1', () => {
+        expect(shouldRetryKvListWithLimitOne({ ...base, limit: 1 }, oversized)).toBe(false);
+    });
+
+    it('does not retry for other errors', () => {
+        expect(shouldRetryKvListWithLimitOne({ ...base, limit: 50 }, 'permission denied')).toBe(
+            false,
+        );
     });
 });
 
@@ -255,5 +314,166 @@ describe('validateKvScope', () => {
         expect(
             validateKvScope({ ...base, scope: 'execution', executionId: '01JEXEC' }),
         ).toBeUndefined();
+    });
+});
+
+describe('validateKvKey', () => {
+    it('rejects a blank key', () => {
+        expect(validateKvKey('')).toMatch(/blank/i);
+        expect(validateKvKey('   ')).toMatch(/blank/i);
+    });
+
+    it('accepts a non-empty key', () => {
+        expect(validateKvKey('orders/cursor')).toBeUndefined();
+    });
+});
+
+describe('validateKvWipePrefix', () => {
+    it('rejects an empty prefix so a wipe cannot target an entire scope', () => {
+        expect(validateKvWipePrefix({ ...base, prefix: '' })).toMatch(/non-empty/i);
+        expect(validateKvWipePrefix({ ...base, prefix: '///' })).toMatch(/non-empty/i);
+    });
+
+    it('accepts a real prefix', () => {
+        expect(validateKvWipePrefix({ ...base, prefix: 'orders/cursor' })).toBeUndefined();
+    });
+});
+
+describe('kvPrefixSegments / buildKvScopeArgs / buildKvTargetArgs', () => {
+    it('drops empty prefix segments', () => {
+        expect(kvPrefixSegments({ ...base, prefix: '/orders//' })).toEqual(['orders']);
+    });
+
+    it('keeps scope targeting without prefix for set/delete', () => {
+        expect(buildKvScopeArgs({ ...base, prefix: 'orders' })).toEqual([
+            '--scope',
+            'project',
+            '--environment',
+            'production',
+        ]);
+    });
+
+    it('adds prefix segments for list/count/wipe targeting', () => {
+        expect(buildKvTargetArgs({ ...base, prefix: 'orders/cursor' })).toEqual([
+            '--scope',
+            'project',
+            '--environment',
+            'production',
+            '--prefix',
+            'orders',
+            '--prefix',
+            'cursor',
+        ]);
+    });
+});
+
+describe('buildKvSetArgs', () => {
+    it('targets the scope, passes key/value, and always includes --yes', () => {
+        expect(
+            buildKvSetArgs(base, { key: 'orders/cursor', value: '{"n":1}' }),
+        ).toEqual([
+            '--scope',
+            'project',
+            '--environment',
+            'production',
+            '--key',
+            'orders/cursor',
+            '--value',
+            '{"n":1}',
+            '--yes',
+        ]);
+    });
+
+    it('stores a plain string value the same way the CLI would', () => {
+        expect(buildKvSetArgs(base, { key: 'flag', value: 'hello' })).toContain('hello');
+    });
+
+    it('encodes an intentional blank string so the CLI accepts it', () => {
+        expect(encodeKvValue('')).toBe('""');
+        expect(buildKvSetArgs(base, { key: 'blank', value: '' })).toContain('""');
+    });
+
+    it('adds --expire-in only for a positive TTL', () => {
+        const withTtl = buildKvSetArgs(base, { key: 'k', value: 'v', expireInMs: 60_000 });
+        expect(withTtl).toEqual(expect.arrayContaining(['--expire-in', '60000']));
+        expect(buildKvSetArgs(base, { key: 'k', value: 'v', expireInMs: 0 })).not.toContain(
+            '--expire-in',
+        );
+    });
+
+    it('adds --if-not-exists when requested', () => {
+        expect(
+            buildKvSetArgs(base, { key: 'k', value: 'v', ifNotExists: true }),
+        ).toContain('--if-not-exists');
+    });
+
+    it('does not leak the list prefix into set', () => {
+        expect(buildKvSetArgs({ ...base, prefix: 'orders' }, { key: 'k', value: 'v' })).not.toContain(
+            '--prefix',
+        );
+    });
+
+    it('rejects a blank key', () => {
+        expect(() => buildKvSetArgs(base, { key: '  ', value: 'v' })).toThrow(/blank/i);
+    });
+
+    it('passes --external-id for the user scope', () => {
+        expect(
+            buildKvSetArgs(
+                { ...base, scope: 'user', externalId: 'cust-1' },
+                { key: 'k', value: 'v' },
+            ),
+        ).toEqual(expect.arrayContaining(['--external-id', 'cust-1']));
+    });
+});
+
+describe('buildKvDeleteArgs', () => {
+    it('targets the scope, passes the key, and always includes --yes', () => {
+        expect(buildKvDeleteArgs(base, 'orders/cursor')).toEqual([
+            '--scope',
+            'project',
+            '--environment',
+            'production',
+            '--key',
+            'orders/cursor',
+            '--yes',
+        ]);
+    });
+
+    it('does not leak the list prefix into delete', () => {
+        expect(buildKvDeleteArgs({ ...base, prefix: 'orders' }, 'k')).not.toContain('--prefix');
+    });
+
+    it('rejects a blank key', () => {
+        expect(() => buildKvDeleteArgs(base, '')).toThrow(/blank/i);
+    });
+});
+
+describe('buildKvWipeArgs', () => {
+    it('builds a dry-run without --confirm', () => {
+        expect(buildKvWipeArgs({ ...base, prefix: 'orders' }, false)).toEqual([
+            '--scope',
+            'project',
+            '--environment',
+            'production',
+            '--prefix',
+            'orders',
+        ]);
+    });
+
+    it('adds --confirm only when asked', () => {
+        expect(buildKvWipeArgs({ ...base, prefix: 'orders' }, true)).toEqual([
+            '--scope',
+            'project',
+            '--environment',
+            'production',
+            '--prefix',
+            'orders',
+            '--confirm',
+        ]);
+    });
+
+    it('rejects an empty wipe prefix before the CLI is spawned', () => {
+        expect(() => buildKvWipeArgs({ ...base, prefix: '' }, true)).toThrow(/non-empty/i);
     });
 });

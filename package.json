@@ -18,18 +18,27 @@
     "onStartupFinished"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "versori",
+          "title": "Versori",
+          "icon": "media/versori.svg"
+        }
+      ]
+    },
+    "views": {
+      "versori": [
+        {
+          "id": "versori.menu",
+          "name": "Menu"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "versori.showMenu",
         "title": "Versori: Show Menu"
-      },
-      {
-        "command": "versori.showOutput",
-        "title": "Versori: Show Output"
-      },
-      {
-        "command": "versori.syncProjectHere",
-        "title": "Versori: Sync Project Here"
       },
       {
         "command": "versori.deployProject",
@@ -38,6 +47,66 @@
       {
         "command": "versori.saveVersion",
         "title": "Versori: Save Version"
+      },
+      {
+        "command": "versori.syncProjectHere",
+        "title": "Versori: Sync"
+      },
+      {
+        "command": "versori.showVersions",
+        "title": "Versori: Versions"
+      },
+      {
+        "command": "versori.resources",
+        "title": "Versori: Resources"
+      },
+      {
+        "command": "versori.kvEntries",
+        "title": "Versori: KV Entries"
+      },
+      {
+        "command": "versori.kvStores",
+        "title": "Versori: KV Stores"
+      },
+      {
+        "command": "versori.connectors",
+        "title": "Versori: Connectors"
+      },
+      {
+        "command": "versori.staticConnections",
+        "title": "Versori: Static Connections"
+      },
+      {
+        "command": "versori.connections",
+        "title": "Versori: Connections"
+      },
+      {
+        "command": "versori.activations",
+        "title": "Versori: Activations"
+      },
+      {
+        "command": "versori.variables",
+        "title": "Versori: Variables"
+      },
+      {
+        "command": "versori.logs",
+        "title": "Versori: Logs"
+      },
+      {
+        "command": "versori.issues",
+        "title": "Versori: Issues"
+      },
+      {
+        "command": "versori.switchContext",
+        "title": "Versori: Switch Context"
+      },
+      {
+        "command": "versori.showOutput",
+        "title": "Versori: Show Output"
+      },
+      {
+        "command": "versori.configureKeybindings",
+        "title": "Versori: Configure Keyboard Shortcuts"
       }
     ],
     "menus": {

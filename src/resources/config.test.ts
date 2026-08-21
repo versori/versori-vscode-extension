@@ -2,11 +2,21 @@ import { describe, expect, it } from 'vitest';
 
 import {
     buildEditArgs,
+    configFromEditor,
+    cpuControl,
+    countControl,
+    editorFromConfig,
     EMPTY_CONFIG,
+    formatCpu,
+    formatSizeDisplay,
+    formatSizePayload,
     hasResourceChange,
+    parseCpuMillicores,
+    parseSizeToMb,
     readResourceConfig,
     readResourceForm,
     ResourceConfig,
+    sizeControl,
 } from './config';
 
 // Shape from `projects details -o json`: a bare object (not a {type,items}
@@ -201,5 +211,106 @@ describe('readResourceForm', () => {
                 storageRequest: '',
             }),
         ).toEqual(current);
+    });
+});
+
+describe('quantity conversion', () => {
+    it('parses millicores and whole cores', () => {
+        expect(parseCpuMillicores('170m')).toBe(170);
+        expect(parseCpuMillicores('1')).toBe(1000);
+        expect(parseCpuMillicores('nope')).toBeUndefined();
+    });
+
+    it('parses binary and decimal size suffixes to megabytes', () => {
+        expect(parseSizeToMb('200M')).toBe(200);
+        expect(parseSizeToMb('1G')).toBe(1000);
+        expect(parseSizeToMb('1Gi')).toBeCloseTo(1073.741824, 5);
+        expect(parseSizeToMb('not-a-size')).toBeUndefined();
+    });
+
+    it('keeps in-range stepped CPU on the slider', () => {
+        expect(cpuControl('170m')).toEqual({ mode: 'slider', value: 170 });
+        expect(cpuControl('500m')).toEqual({ mode: 'slider', value: 500 });
+    });
+
+    it('does not clamp out-of-range or off-step CPU into the slider', () => {
+        expect(cpuControl('600m')).toEqual({ mode: 'custom', raw: '600m' });
+        expect(cpuControl('175m')).toEqual({ mode: 'custom', raw: '175m' });
+        expect(cpuControl('')).toEqual({ mode: 'unset' });
+        expect(cpuControl('lots')).toEqual({ mode: 'custom', raw: 'lots' });
+    });
+
+    it('keeps Mi quantities custom when they are not an exact MB step', () => {
+        // 512Mi ≈ 536.87 MB — inside 200–2000, but not on a 50 MB step.
+        expect(sizeControl('512Mi', 200, 2000, 50)).toEqual({ mode: 'custom', raw: '512Mi' });
+        expect(sizeControl('200M', 200, 2000, 50)).toEqual({ mode: 'slider', value: 200 });
+        expect(sizeControl('3G', 200, 2000, 50)).toEqual({ mode: 'custom', raw: '3G' });
+    });
+
+    it('keeps replica counts outside 1–3 as custom, and blank as unset', () => {
+        expect(countControl('2', 1, 3)).toEqual({ mode: 'slider', value: 2 });
+        expect(countControl('5', 1, 3)).toEqual({ mode: 'custom', raw: '5' });
+        expect(countControl('', 1, 3)).toEqual({ mode: 'unset' });
+    });
+
+    it('formats slider values the way the web Environment Config does', () => {
+        expect(formatCpu(170)).toBe('170m');
+        expect(formatSizePayload(200)).toBe('200M');
+        expect(formatSizeDisplay(200)).toBe('200 MiB');
+        expect(formatSizeDisplay(2000)).toBe('2 GiB');
+    });
+});
+
+describe('editorFromConfig / configFromEditor', () => {
+    it('round-trips slider-friendly values without inventing blanks', () => {
+        const friendly: ResourceConfig = {
+            replicas: '2',
+            maxReplicas: '3',
+            staticIP: false,
+            serviceAccount: 'sa',
+            limits: { cpu: '170m', memory: '200M', storage: '100M' },
+            requests: { cpu: '50m', memory: '100Mi', storage: '' },
+        };
+        const editor = editorFromConfig(friendly);
+        expect(editor.cpu).toEqual({ mode: 'slider', value: 170 });
+        expect(editor.memory).toEqual({ mode: 'slider', value: 200 });
+        expect(editor.storage).toEqual({ mode: 'slider', value: 100 });
+        expect(editor.replicas).toEqual({ mode: 'slider', value: 2 });
+        expect(editor.maxReplicas).toEqual({ mode: 'slider', value: 3 });
+        expect(editor.requests).toEqual(friendly.requests);
+        expect(configFromEditor(editor)).toEqual(friendly);
+    });
+
+    it('preserves out-of-range limits, requests, and service account on Apply', () => {
+        const editor = editorFromConfig(current);
+        expect(editor.cpu).toEqual({ mode: 'slider', value: 500 });
+        expect(editor.memory).toEqual({ mode: 'custom', raw: '512Mi' });
+        expect(editor.storage).toEqual({ mode: 'custom', raw: '1Gi' });
+        expect(editor.maxReplicas).toEqual({ mode: 'custom', raw: '5' });
+        expect(editor.serviceAccount).toBe('sync-sa');
+        expect(editor.requests).toEqual(current.requests);
+
+        const next = configFromEditor({
+            ...editor,
+            cpu: { mode: 'slider', value: 200 },
+        });
+        expect(next.limits.cpu).toBe('200m');
+        expect(next.limits.memory).toBe('512Mi');
+        expect(next.limits.storage).toBe('1Gi');
+        expect(next.maxReplicas).toBe('5');
+        expect(next.serviceAccount).toBe('sync-sa');
+        expect(next.requests).toEqual(current.requests);
+
+        const args = buildEditArgs('production', current, next, PROJECT);
+        expect(args[args.indexOf('--resource.cpu.limits') + 1]).toBe('200m');
+        expect(args[args.indexOf('--max-replicas') + 1]).toBe('5');
+        expect(args).not.toContain('--service-account');
+    });
+
+    it('leaves unset quantities blank instead of substituting defaults', () => {
+        const editor = editorFromConfig(EMPTY_CONFIG);
+        expect(editor.cpu).toEqual({ mode: 'unset' });
+        expect(editor.maxReplicas).toEqual({ mode: 'unset' });
+        expect(configFromEditor(editor)).toEqual(EMPTY_CONFIG);
     });
 });

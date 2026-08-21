@@ -10,9 +10,25 @@ import {
     toChannelRows,
 } from './notifications';
 
-// Field names from NotificationChannel / ProjectNotification in
-// versori-api.yaml: snake_case throughout, except `channelName`.
-const channel = {
+// Real CLI printable shapes (`versori notifications … list -o json`), not the
+// nested API schemas. Matching the API shape was what blanked emails in the UI.
+const printableChannel = {
+    name: 'Ops on-call',
+    id: '01JCHANNEL',
+    type: 'email',
+    to: 'ops@acme.test',
+};
+
+const printableBinding = {
+    name: 'production critical only',
+    id: '01JBINDING',
+    channelName: 'Ops on-call',
+    channelId: '01JCHANNEL',
+    environmentId: '01JENV',
+};
+
+// Still accepted: raw NotificationChannel / ProjectNotification from the API.
+const apiChannel = {
     id: '01JCHANNEL',
     organisation_id: '01JORG',
     name: 'Ops on-call',
@@ -22,7 +38,7 @@ const channel = {
     updated_at: '2026-04-01T09:00:00Z',
 };
 
-const binding = {
+const apiBinding = {
     id: '01JBINDING',
     project_id: '01JPROJECT',
     environment_id: '01JENV',
@@ -35,17 +51,23 @@ const binding = {
 };
 
 describe('toChannelRows', () => {
-    it('reads the id, name and recipient out of the nested email config', () => {
-        expect(toChannelRows({ items: [channel] })).toEqual([
+    it('reads id, name and top-level `to` from the CLI printable envelope', () => {
+        expect(
+            toChannelRows({ type: 'printableChannel', items: [printableChannel] }),
+        ).toEqual([{ id: '01JCHANNEL', name: 'Ops on-call', email: 'ops@acme.test' }]);
+    });
+
+    it('still accepts the nested API config.email.to shape', () => {
+        expect(toChannelRows({ items: [apiChannel] })).toEqual([
             { id: '01JCHANNEL', name: 'Ops on-call', email: 'ops@acme.test' },
         ]);
     });
 
     it('falls back to the id when a channel has no name', () => {
-        expect(toChannelRows([{ ...channel, name: '' }])[0].name).toBe('01JCHANNEL');
+        expect(toChannelRows([{ ...printableChannel, name: '' }])[0].name).toBe('01JCHANNEL');
     });
 
-    it('tolerates a channel with no email config', () => {
+    it('tolerates a channel with no email address', () => {
         expect(toChannelRows([{ id: '01JC', name: 'Slack', type: 'slack' }])[0].email).toBe('');
     });
 
@@ -59,8 +81,24 @@ describe('toChannelRows', () => {
 });
 
 describe('toBindingRows', () => {
-    it('reads the binding id, its label, the channel name and the recipient', () => {
-        expect(toBindingRows({ items: [binding] })).toEqual([
+    it('joins the recipient from the channels list onto printable bindings', () => {
+        const channels = toChannelRows({ items: [printableChannel] });
+        expect(toBindingRows({ type: 'printableProjectNotification', items: [printableBinding] }, channels)).toEqual([
+            {
+                id: '01JBINDING',
+                name: 'production critical only',
+                channelName: 'Ops on-call',
+                email: 'ops@acme.test',
+            },
+        ]);
+    });
+
+    it('leaves email blank when no channels were supplied (printable rows have no `to`)', () => {
+        expect(toBindingRows({ items: [printableBinding] })[0].email).toBe('');
+    });
+
+    it('reads the recipient from nested API config when present on the binding', () => {
+        expect(toBindingRows({ items: [apiBinding] })).toEqual([
             {
                 id: '01JBINDING',
                 name: 'production critical only',
@@ -72,11 +110,11 @@ describe('toBindingRows', () => {
 
     it('falls back to the channel name when the binding has no label of its own', () => {
         // `--name` defaults to the channel name, so this is the common case.
-        expect(toBindingRows([{ ...binding, name: '' }])[0].name).toBe('Ops on-call');
+        expect(toBindingRows([{ ...printableBinding, name: '' }])[0].name).toBe('Ops on-call');
     });
 
     it('skips entries with no id, which cannot be unlinked', () => {
-        expect(toBindingRows([{ ...binding, id: '' }])).toEqual([]);
+        expect(toBindingRows([{ ...printableBinding, id: '' }])).toEqual([]);
     });
 });
 

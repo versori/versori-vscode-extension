@@ -5,6 +5,7 @@ import {
     CONTROLS_SCRIPT,
     FIELD_PICKER_SCRIPT,
     htmlDocument,
+    NAV_SCRIPT,
     RAW_PANE_SCRIPT,
 } from './shell';
 
@@ -55,11 +56,12 @@ describe('shared scripts', () => {
         expect(RAW_PANE_SCRIPT).toContain('function wireRawPane(');
     });
 
-    it('ship the raw-pane helpers into every panel document', () => {
-        // The four panels' own tests concatenate RAW_PANE_SCRIPT themselves, so
-        // only this assertion catches the shared fragment being dropped from the
-        // real document — which would make every panel throw on its first render.
-        expect(htmlDocument(parts)).toContain(RAW_PANE_SCRIPT);
+    it('ships the shared nav chrome and wireNav helper into every panel document', () => {
+        const html = htmlDocument(parts);
+        expect(html).toContain('id="navBack"');
+        expect(html).toContain('id="navClose"');
+        expect(html).toContain(NAV_SCRIPT);
+        expect(NAV_SCRIPT).toContain('function wireNav(');
     });
 });
 
