@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { EMPTY_IGNORE, IgnoreMatcher, parseGitignore } from './ignore';
+import { byCodePoint } from './pairs';
 
 /**
  * Names sync refuses to touch, so compare must not diff them either.
@@ -37,7 +38,7 @@ export function loadProjectIgnore(root: string): IgnoreMatcher {
 export function listProjectFiles(root: string, ignore: IgnoreMatcher): string[] {
     const found: string[] = [];
     walk(root, '', ignore, found);
-    return found.sort((a, b) => a.localeCompare(b));
+    return found.sort(byCodePoint);
 }
 
 function walk(root: string, relative: string, ignore: IgnoreMatcher, found: string[]): void {
