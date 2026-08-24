@@ -163,7 +163,7 @@ async function openDiffs(
     // `vscode.changes` is a built-in command with no typings, so the triple
     // shape is not compiler-checked: [resource, left, right].
     const resources = ordered.map((pair) => [
-        vscode.Uri.file(path.join(sidecar, pair.relativePath)),
+        rowUri(projectDir, sidecar, pair),
         sideUri(projectDir, pair, 'working'),
         sideUri(sidecar, pair, 'version'),
     ]);
@@ -204,7 +204,32 @@ function sideUri(root: string, pair: ComparePair, side: 'working' | 'version'): 
     if (exists) {
         return vscode.Uri.file(path.join(root, pair.relativePath));
     }
-    return vscode.Uri.from({ scheme: 'untitled', path: `/${side}/${pair.relativePath}` });
+    // Deliberately a relative, namespaced path: an absolute `untitled:` uri is
+    // filesystem-associated, so a Save on this empty pane would target a real
+    // location like `/working/src/foo.ts`.
+    return vscode.Uri.from({
+        scheme: 'untitled',
+        path: `versori-compare/${side}/${pair.relativePath}`,
+    });
+}
+
+/**
+ * The row's identity in the multi-diff — what its label and "go to file" resolve
+ * against.
+ *
+ * Prefers a side that is actually on disk, working first, because a row for a
+ * file that exists only in the working folder must not point at a sidecar path
+ * that was never written. Falls back to the untitled working side so the row
+ * still has a stable identity when neither side has the file.
+ */
+function rowUri(projectDir: string, sidecar: string, pair: ComparePair): vscode.Uri {
+    if (pair.workingExists) {
+        return vscode.Uri.file(path.join(projectDir, pair.relativePath));
+    }
+    if (pair.sidecarExists) {
+        return vscode.Uri.file(path.join(sidecar, pair.relativePath));
+    }
+    return sideUri(projectDir, pair, 'working');
 }
 
 function isBinaryPair(projectDir: string, sidecar: string, pair: ComparePair): boolean {
