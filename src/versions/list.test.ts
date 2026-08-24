@@ -104,6 +104,25 @@ describe('versionSelectChoices', () => {
         expect(choices[0].value).toBe('');
         expect(choices.slice(1).map((choice) => choice.value)).toEqual(['01M', '01A', '01Z']);
     });
+
+    it('labels a row by name and falls back to the id when it has no description', () => {
+        const choices = versionSelectChoices([
+            { id: '01WITHDESC', name: 'v2.0', description: 'shipped the webhook fix' },
+            { id: '01NODESC', name: 'v1.9', description: '' },
+        ]);
+
+        // choices[0] is Latest; the version rows follow in input order.
+        expect(choices[1]).toEqual({
+            label: 'v2.0',
+            description: 'shipped the webhook fix',
+            value: '01WITHDESC',
+        });
+        expect(choices[2]).toEqual({
+            label: 'v1.9',
+            description: '01NODESC',
+            value: '01NODESC',
+        });
+    });
 });
 
 describe('versionPickItems', () => {
