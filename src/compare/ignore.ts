@@ -12,8 +12,14 @@ export interface IgnoreMatcher {
 }
 
 /**
- * Always ignored by basename, whatever the patterns say. The CLI applies this
- * before its pattern list and negation cannot override it.
+ * Always ignored, checked before the pattern list, and `!` cannot bring these
+ * back.
+ *
+ * Deliberately broader than the CLI, which tests `filepath.Base` only: this
+ * matches the name in ANY path segment, so `.git/HEAD` is ignored too. The
+ * walker prunes `.git` directories before descending, so the two never
+ * actually disagree — and where they would, hiding git internals from a
+ * project diff is what we want.
  */
 const ALWAYS_IGNORED_NAMES = new Set(['.git']);
 
@@ -68,6 +74,14 @@ function isAlwaysIgnored(relativePath: string): boolean {
         .some((segment) => ALWAYS_IGNORED_NAMES.has(segment));
 }
 
+/**
+ * Normalise a relative path for matching.
+ *
+ * Caller contract: paths arrive as walker-built relative paths, so they are
+ * never empty and never contain a doubled separator. The CLI's matcher returns
+ * false for the empty root and collapses `//` via `filepath.Abs`; neither case
+ * is reachable here, so neither is guarded.
+ */
 function toPosix(relativePath: string): string {
     return relativePath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
 }
@@ -168,60 +182,171 @@ function matchDoubleAsterisk(patternSegments: string[], pathSegments: string[]):
 }
 
 /**
- * One path component against one pattern component, using Go's
- * `filepath.Match` rules: `*` and `?` never cross a separator, `[...]` is a
- * character class, and `\` escapes the next character.
+ * One path component against one pattern component, following Go's
+ * `filepath.Match` rather than JS RegExp conventions.
+ *
+ * A pattern Go rejects as `ErrBadPattern` matches nothing: the CLI discards
+ * that error and carries on, so Compare must too. Returning `undefined` from
+ * `segmentRegExp` — rather than throwing, or falling back to a literal — is
+ * what keeps a malformed `.gitignore` from aborting a walk that sync would
+ * complete.
  */
 function matchSegment(pattern: string, name: string): boolean {
-    return segmentRegExp(pattern).test(name);
+    const expression = segmentRegExp(pattern);
+    return expression !== undefined && expression.test(name);
 }
 
-function segmentRegExp(pattern: string): RegExp {
+/** `undefined` for any pattern Go treats as `ErrBadPattern`. */
+function segmentRegExp(pattern: string): RegExp | undefined {
     let source = '';
+    let i = 0;
 
-    for (let i = 0; i < pattern.length; i += 1) {
+    while (i < pattern.length) {
         const char = pattern[i];
 
-        if (char === '\\' && i + 1 < pattern.length) {
-            i += 1;
-            source += escapeLiteral(pattern[i]);
+        if (char === '\\') {
+            // Go: a trailing backslash is ErrBadPattern.
+            if (i + 1 >= pattern.length) {
+                return undefined;
+            }
+            source += escapeLiteral(pattern[i + 1]);
+            i += 2;
             continue;
         }
 
         if (char === '*') {
             source += '[^/]*';
+            i += 1;
             continue;
         }
 
         if (char === '?') {
             source += '[^/]';
+            i += 1;
             continue;
         }
 
         if (char === '[') {
-            const close = pattern.indexOf(']', i + 1);
-            if (close === -1) {
-                // An unterminated class is a literal `[`, as filepath.Match
-                // treats it (it returns ErrBadPattern; a literal is the closest
-                // non-throwing reading, and sync would just not match either).
-                source += '\\[';
-                continue;
+            const parsed = parseClass(pattern, i);
+            if (parsed === undefined) {
+                return undefined;
             }
-
-            const body = pattern.slice(i + 1, close);
-            // Go negates with `^`, glob(7) also allows `!`; a leading `^` that
-            // is meant literally cannot be expressed either way, so both map to
-            // a negated JS class.
-            const negated = body.startsWith('^') || body.startsWith('!');
-            source += `[${negated ? `^${body.slice(1)}` : body}]`;
-            i = close;
+            source += parsed.source;
+            i = parsed.next;
             continue;
         }
 
         source += escapeLiteral(char);
+        i += 1;
     }
 
-    return new RegExp(`^${source}$`);
+    try {
+        return new RegExp(`^${source}$`);
+    } catch {
+        // Unreachable while parseClass is correct, but Go discards
+        // ErrBadPattern and so must we: never abort the walk.
+        return undefined;
+    }
+}
+
+interface ClassParse {
+    /** Regex source matching exactly one character. */
+    source: string;
+    /** Index just past the closing `]`. */
+    next: number;
+}
+
+/**
+ * Parse a `[...]` class the way Go does, not the way JS would.
+ *
+ * The differences all matter here:
+ *  - only `^` negates; a leading `!` is an ordinary member
+ *  - the class must be non-empty, and `-` may not stand where an endpoint is
+ *    due, so `[]`, `[-a]`, and `[a-]` are all ErrBadPattern
+ *  - an unterminated class is ErrBadPattern
+ *  - `\` escapes the next character inside the class
+ *  - an inverted range like `[z-a]` is legal in Go and simply never matches,
+ *    where JS would throw — so it is dropped rather than emitted
+ */
+function parseClass(pattern: string, open: number): ClassParse | undefined {
+    let i = open + 1;
+
+    let negated = false;
+    if (pattern[i] === '^') {
+        negated = true;
+        i += 1;
+    }
+
+    const parts: string[] = [];
+    let endpoints = 0;
+
+    for (;;) {
+        if (i >= pattern.length) {
+            return undefined;
+        }
+        if (pattern[i] === ']' && endpoints > 0) {
+            i += 1;
+            break;
+        }
+
+        const lo = readClassChar(pattern, i);
+        if (lo === undefined) {
+            return undefined;
+        }
+        i = lo.next;
+
+        let hi = lo;
+        if (pattern[i] === '-') {
+            const after = readClassChar(pattern, i + 1);
+            if (after === undefined) {
+                return undefined;
+            }
+            hi = after;
+            i = after.next;
+        }
+
+        endpoints += 1;
+
+        if (lo.char <= hi.char) {
+            parts.push(
+                lo.char === hi.char
+                    ? escapeClassChar(lo.char)
+                    : `${escapeClassChar(lo.char)}-${escapeClassChar(hi.char)}`,
+            );
+        }
+    }
+
+    if (parts.length === 0) {
+        // Every range was inverted, so no character matches one. Go compares
+        // `match == negated`, so a negated class that matched nothing matches.
+        return { source: negated ? '[^]' : '[^\\s\\S]', next: i };
+    }
+
+    return { source: `[${negated ? '^' : ''}${parts.join('')}]`, next: i };
+}
+
+interface ClassChar {
+    char: string;
+    next: number;
+}
+
+/** Go's `getEsc`: rejects `-` and `]`, and honours a `\` escape. */
+function readClassChar(pattern: string, i: number): ClassChar | undefined {
+    if (i >= pattern.length || pattern[i] === '-' || pattern[i] === ']') {
+        return undefined;
+    }
+    if (pattern[i] === '\\') {
+        if (i + 1 >= pattern.length) {
+            return undefined;
+        }
+        return { char: pattern[i + 1], next: i + 2 };
+    }
+    return { char: pattern[i], next: i + 1 };
+}
+
+/** Escape a literal character for use inside a JS character class. */
+function escapeClassChar(char: string): string {
+    return /[\\\]^-]/.test(char) ? `\\${char}` : char;
 }
 
 function escapeLiteral(char: string): string {
