@@ -23,6 +23,15 @@ describe('parseGitignore line parsing', () => {
     it('treats a file of only blanks and comments as ignoring nothing', () => {
         expect(parseGitignore('# nothing here\n\n').matches('anything', false)).toBe(false);
     });
+
+    it('skips a comment even when its text would otherwise be a matching pattern', () => {
+        // With the `#` skip removed, `#secret.txt` parses as a pattern that
+        // matches the file of that name — which is what makes this case bind to
+        // the skip rather than merely pass.
+        const ignore = parseGitignore('#secret.txt\n');
+
+        expect(ignore.matches('#secret.txt', false)).toBe(false);
+    });
 });
 
 describe('parseGitignore anchoring', () => {

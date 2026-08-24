@@ -4,9 +4,22 @@ import {
     LATEST_VERSION_LABEL,
     LATEST_VERSION_VALUE,
     parseVersionList,
+    VersionEntry,
     versionPickItems,
     versionSelectChoices,
 } from './list';
+
+/**
+ * M, A, Z is none of: id-asc (A,M,Z), id-desc (Z,M,A), name-asc
+ * (alpha, beta, gamma → A,M,Z), or name-desc (Z,M,A). Any of those
+ * four sorts would change the order, so an assertion of this sequence
+ * binds to "preserve input order".
+ */
+const CLI_ORDER: VersionEntry[] = [
+    { id: '01M', name: 'beta', description: 'middle id, middle name' },
+    { id: '01A', name: 'alpha', description: 'lowest id, first name' },
+    { id: '01Z', name: 'gamma', description: 'highest id, last name' },
+];
 
 describe('parseVersionList', () => {
     it('reads the VersionSummary envelope the CLI emits', () => {
@@ -85,28 +98,21 @@ describe('versionSelectChoices', () => {
     });
 
     it('keeps Latest first and its value blank so --version stays off the argv', () => {
-        const choices = versionSelectChoices([
-            { id: '01VERSION1', name: 'v1.2', description: 'shipped Tuesday' },
-            { id: '01VERSION2', name: 'v1.1', description: '' },
-        ]);
+        const choices = versionSelectChoices(CLI_ORDER);
 
         expect(choices[0].label).toBe(LATEST_VERSION_LABEL);
         expect(choices[0].value).toBe('');
-        expect(choices.slice(1)).toEqual([
-            { label: 'v1.2', description: 'shipped Tuesday', value: '01VERSION1' },
-            { label: 'v1.1', description: '01VERSION2', value: '01VERSION2' },
-        ]);
+        expect(choices.slice(1).map((choice) => choice.value)).toEqual(['01M', '01A', '01Z']);
     });
 });
 
 describe('versionPickItems', () => {
     it('preserves the CLI order rather than re-sorting newest-first rows', () => {
-        expect(
-            versionPickItems([
-                { id: '01NEW', name: 'v2.0', description: 'newest' },
-                { id: '01OLD', name: 'v1.0', description: 'oldest' },
-            ]).map((item) => item.value.id),
-        ).toEqual(['01NEW', '01OLD']);
+        expect(versionPickItems(CLI_ORDER).map((item) => item.value.id)).toEqual([
+            '01M',
+            '01A',
+            '01Z',
+        ]);
     });
 
     it('labels each row with the history icon and carries the whole entry', () => {
