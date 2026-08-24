@@ -11,6 +11,7 @@ import {
     formActionLabel,
     goBack,
     requiresConfirmation,
+    selectChoices,
     setFormValue,
     stepFor,
     totalSteps,
@@ -18,7 +19,7 @@ import {
     visibleReviewFields,
 } from './quick-model';
 import { resolveFormMessage } from './build';
-import { FormSpec, FormValues } from './types';
+import { CheckboxField, FormSpec, FormValues, SelectField } from './types';
 
 const spec: FormSpec = {
     title: 'Deploy',
@@ -210,5 +211,108 @@ describe('quick form state model', () => {
         expect(
             stepFor(spec, { kind: 'result', ok: true, text: 'preview' }, dryRun),
         ).toBe(1);
+    });
+});
+
+describe('selectChoices', () => {
+    it('reads plain options as choices whose label is their value', () => {
+        expect(
+            selectChoices({
+                kind: 'select',
+                id: 'environment',
+                label: 'Environment',
+                value: 'development',
+                options: ['development', 'production'],
+            }),
+        ).toEqual([
+            { label: 'development', value: 'development' },
+            { label: 'production', value: 'production' },
+        ]);
+    });
+
+    it('passes labeled choices through with their descriptions intact', () => {
+        const choices = [
+            {
+                label: 'Latest (current files)',
+                description: "the project's current files",
+                value: '',
+            },
+            { label: 'v1.2', description: 'shipped Tuesday', value: '01VERSION' },
+        ];
+
+        expect(
+            selectChoices({
+                kind: 'select',
+                id: 'versionId',
+                label: 'Version',
+                value: '',
+                choices,
+            }),
+        ).toEqual(choices);
+    });
+
+    it('has no choices for a select that declared neither spelling', () => {
+        expect(
+            selectChoices({ kind: 'select', id: 'versionId', label: 'Version', value: '' }),
+        ).toEqual([]);
+    });
+});
+
+describe('fieldSummary', () => {
+    const versionField: SelectField = {
+        kind: 'select',
+        id: 'versionId',
+        label: 'Version',
+        value: '',
+        choices: [
+            { label: 'Latest (current files)', value: '' },
+            { label: 'v1.2', description: 'shipped Tuesday', value: '01VERSION' },
+        ],
+    };
+
+    it('shows a labeled choice by its label, never its opaque id', () => {
+        expect(fieldSummary(versionField, '01VERSION')).toBe('v1.2');
+    });
+
+    it("shows the empty-valued choice's label rather than treating it as blank", () => {
+        expect(fieldSummary(versionField, '')).toBe('Latest (current files)');
+        expect(fieldSummary(versionField, undefined)).toBe('Latest (current files)');
+    });
+
+    it('falls back to the raw value when it matches no choice', () => {
+        const withoutLatest: SelectField = {
+            ...versionField,
+            choices: [{ label: 'v1.2', value: '01VERSION' }],
+        };
+
+        expect(fieldSummary(withoutLatest, '01GONE')).toBe('01GONE');
+        expect(fieldSummary(withoutLatest, '')).toBe('(blank)');
+    });
+
+    it('shows a plain option select by its value, as before', () => {
+        expect(
+            fieldSummary(
+                {
+                    kind: 'select',
+                    id: 'environment',
+                    label: 'Environment',
+                    value: 'development',
+                    options: ['development', 'production'],
+                },
+                'production',
+            ),
+        ).toBe('production');
+    });
+
+    it('shows a checkbox as On or Off', () => {
+        const checkbox: CheckboxField = {
+            kind: 'checkbox',
+            id: 'dryRun',
+            label: 'Dry run',
+            value: true,
+        };
+
+        expect(fieldSummary(checkbox, true)).toBe('On');
+        expect(fieldSummary(checkbox, false)).toBe('Off');
     });
 });
