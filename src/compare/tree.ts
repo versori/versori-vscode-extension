@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { EMPTY_IGNORE, IgnoreMatcher, parseGitignore } from './ignore';
-import { byCodePoint } from './pairs';
+import { byCodePoint } from './sort';
 
 /**
  * Names sync refuses to touch, so compare must not diff them either.
