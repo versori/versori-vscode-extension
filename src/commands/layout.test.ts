@@ -29,6 +29,7 @@ describe('menuLayout in a project', () => {
             'versori.deployProject',
             'versori.saveVersion',
             'versori.syncProjectHere',
+            'versori.compareVersion',
             'versori.showVersions',
             'versori.resources',
             'versori.kvEntries',
@@ -71,6 +72,10 @@ describe('menuLayout outside a project', () => {
             'versori.showOutput',
             'versori.configureKeybindings',
         ]);
+    });
+
+    it('does not offer Compare version without a project', () => {
+        expect(commands(menuLayout(false))).not.toContain('versori.compareVersion');
     });
 
     it('uses the narrower section labels', () => {
