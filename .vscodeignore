@@ -8,4 +8,5 @@ vitest.config.ts
 **/*.map
 .gitignore
 .superpowers/**
+.claude/**
 CLAUDE.md
