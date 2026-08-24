@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 
+import { envelopeItems, text } from '../cli-json';
 import { ResolvedState } from '../resolver/types';
 
 export interface SyncValues {
@@ -210,7 +211,7 @@ export function buildSyncArgs(values: SyncValues): string[] {
 
 /** Parse the `{ projects: [...] }` response emitted by `projects list -o json`. */
 export function parseProjectList(raw: unknown): ProjectEntry[] {
-    const entries = projectEntries(raw);
+    const entries = envelopeItems(raw, ['projects', 'items', 'results']);
 
     return entries
         .map((entry) => {
@@ -253,25 +254,4 @@ export function projectPickItems(
                     : project.id,
             projectId: project.id,
         }));
-}
-
-function projectEntries(raw: unknown): unknown[] {
-    if (Array.isArray(raw)) {
-        return raw;
-    }
-    if (!raw || typeof raw !== 'object') {
-        return [];
-    }
-
-    const record = raw as Record<string, unknown>;
-    for (const key of ['projects', 'items', 'results']) {
-        if (Array.isArray(record[key])) {
-            return record[key] as unknown[];
-        }
-    }
-    return [];
-}
-
-function text(value: unknown): string {
-    return typeof value === 'string' ? value.trim() : '';
 }
