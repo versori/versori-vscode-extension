@@ -15,6 +15,20 @@ import { isBinaryFile } from './binary';
 import { loadProjectIgnore, listProjectFiles } from './tree';
 import { ComparePair, comparePairs } from './pairs';
 
+/** Private scheme for the empty side of a one-sided diff. */
+export const COMPARE_EMPTY_SCHEME = 'versori-compare-empty';
+
+/**
+ * Content for the missing side of a one-sided pair.
+ *
+ * A registered read-only scheme rather than an `untitled:` uri: any untitled
+ * path longer than one character carries a save target, so an `untitled:` empty
+ * pane could be written to a real file. This scheme can only ever be empty.
+ */
+export const compareEmptyProvider: vscode.TextDocumentContentProvider = {
+    provideTextDocumentContent: () => '',
+};
+
 /**
  * Diff the working project folder against one of its saved versions.
  *
@@ -195,21 +209,18 @@ const MAX_FALLBACK_DIFFS = 20;
 /**
  * The uri for one side of a pair.
  *
- * A file missing on this side becomes an empty `untitled:` document rather
- * than a missing-file uri, so a one-sided file reads as an add or a delete
- * instead of failing the pair.
+ * A file missing on this side becomes an empty document on the private
+ * `versori-compare-empty` scheme rather than a missing-file uri, so a
+ * one-sided file reads as an add or a delete instead of failing the pair.
  */
 function sideUri(root: string, pair: ComparePair, side: 'working' | 'version'): vscode.Uri {
     const exists = side === 'working' ? pair.workingExists : pair.sidecarExists;
     if (exists) {
         return vscode.Uri.file(path.join(root, pair.relativePath));
     }
-    // Deliberately a relative, namespaced path: an absolute `untitled:` uri is
-    // filesystem-associated, so a Save on this empty pane would target a real
-    // location like `/working/src/foo.ts`.
     return vscode.Uri.from({
-        scheme: 'untitled',
-        path: `versori-compare/${side}/${pair.relativePath}`,
+        scheme: COMPARE_EMPTY_SCHEME,
+        path: `/${side}/${pair.relativePath}`,
     });
 }
 
@@ -219,7 +230,7 @@ function sideUri(root: string, pair: ComparePair, side: 'working' | 'version'): 
  *
  * Prefers a side that is actually on disk, working first, because a row for a
  * file that exists only in the working folder must not point at a sidecar path
- * that was never written. Falls back to the untitled working side so the row
+ * that was never written. Falls back to the empty working side so the row
  * still has a stable identity when neither side has the file.
  */
 function rowUri(projectDir: string, sidecar: string, pair: ComparePair): vscode.Uri {

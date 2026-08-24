@@ -19,6 +19,7 @@ import { LocalContextResolver } from './resolver/local';
 import { ContextResolver, EMPTY_STATE, ResolvedState } from './resolver/types';
 import { VersoriSidebar } from './sidebar';
 import { VersoriStatusBar } from './statusbar';
+import { COMPARE_EMPTY_SCHEME, compareEmptyProvider } from './compare/panel';
 import { openSyncForm } from './sync/panel';
 
 const MENU_COMMAND = 'versori.showMenu';
@@ -30,6 +31,12 @@ const CONTEXT_SAVE_COMMAND = 'versori.saveVersion';
 export function activate(context: vscode.ExtensionContext): void {
     const output = vscode.window.createOutputChannel('Versori');
     context.subscriptions.push(output);
+    context.subscriptions.push(
+        vscode.workspace.registerTextDocumentContentProvider(
+            COMPARE_EMPTY_SCHEME,
+            compareEmptyProvider,
+        ),
+    );
 
     const keybindings = new KeybindingStore(context.globalStorageUri.fsPath);
     const chordFor = (command: string): string | undefined => keybindings.chordFor(command);
