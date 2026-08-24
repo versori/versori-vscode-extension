@@ -19,7 +19,7 @@ import { LocalContextResolver } from './resolver/local';
 import { ContextResolver, EMPTY_STATE, ResolvedState } from './resolver/types';
 import { VersoriSidebar } from './sidebar';
 import { VersoriStatusBar } from './statusbar';
-import { COMPARE_EMPTY_SCHEME, compareEmptyProvider } from './compare/panel';
+import { COMPARE_EMPTY_SCHEME, compareEmptyProvider, openCompareVersion } from './compare/panel';
 import { openSyncForm } from './sync/panel';
 
 const MENU_COMMAND = 'versori.showMenu';
@@ -27,6 +27,7 @@ const CLI_PATH_SETTING = 'versori.cliPath';
 const CONTEXT_SYNC_COMMAND = 'versori.syncProjectHere';
 const CONTEXT_DEPLOY_COMMAND = 'versori.deployProject';
 const CONTEXT_SAVE_COMMAND = 'versori.saveVersion';
+const CONTEXT_COMPARE_COMMAND = 'versori.compareVersion';
 
 export function activate(context: vscode.ExtensionContext): void {
     const output = vscode.window.createOutputChannel('Versori');
@@ -162,6 +163,7 @@ export function activate(context: vscode.ExtensionContext): void {
         CONTEXT_SYNC_COMMAND,
         CONTEXT_DEPLOY_COMMAND,
         CONTEXT_SAVE_COMMAND,
+        CONTEXT_COMPARE_COMMAND,
     ]);
 
     // These two touch no CLI and must stay reachable when the binary is missing —
@@ -256,6 +258,20 @@ export function activate(context: vscode.ExtensionContext): void {
                 uri,
                 'Save version',
                 openSaveVersionForm,
+                cliPath,
+                resolver,
+                output,
+            );
+        }),
+        vscode.commands.registerCommand(CONTEXT_COMPARE_COMMAND, async (uri?: vscode.Uri) => {
+            if (!uri) {
+                await runAction(actionFor(CONTEXT_COMPARE_COMMAND)!);
+                return;
+            }
+            await runProjectContextForm(
+                uri,
+                'Compare version',
+                openCompareVersion,
                 cliPath,
                 resolver,
                 output,

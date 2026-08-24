@@ -53,6 +53,10 @@
         "title": "Versori: Sync"
       },
       {
+        "command": "versori.compareVersion",
+        "title": "Versori: Compare Version"
+      },
+      {
         "command": "versori.showVersions",
         "title": "Versori: Versions"
       },
@@ -113,6 +117,11 @@
       "explorer/context": [
         {
           "command": "versori.syncProjectHere",
+          "when": "explorerResourceIsFolder",
+          "group": "versori"
+        },
+        {
+          "command": "versori.compareVersion",
           "when": "explorerResourceIsFolder",
           "group": "versori"
         },
