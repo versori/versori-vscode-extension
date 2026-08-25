@@ -143,8 +143,8 @@ describe('collidingSidecarNames', () => {
     it('finds nothing to disambiguate when every name sanitises differently', () => {
         expect(
             collidingSidecarNames([
-                { id: '01A', name: 'v1.2', description: '' },
-                { id: '01B', name: 'v1.1', description: '' },
+                { id: '01A', name: 'v1.2', description: '', createdAt: '' },
+                { id: '01B', name: 'v1.1', description: '', createdAt: '' },
             ]),
         ).toEqual(new Set());
     });
@@ -152,9 +152,9 @@ describe('collidingSidecarNames', () => {
     it('reports the one sanitised name two different version names collapse onto', () => {
         expect(
             collidingSidecarNames([
-                { id: '01A', name: 'a/b', description: '' },
-                { id: '01B', name: 'a / b', description: '' },
-                { id: '01C', name: 'solo', description: '' },
+                { id: '01A', name: 'a/b', description: '', createdAt: '' },
+                { id: '01B', name: 'a / b', description: '', createdAt: '' },
+                { id: '01C', name: 'solo', description: '', createdAt: '' },
             ]),
         ).toEqual(new Set(['a - b']));
     });

@@ -5,7 +5,12 @@ import * as vscode from 'vscode';
 import { run, runJson } from '../cli';
 import { FormDeps } from '../forms/panel';
 import { POPUP_BACK, PopupSession } from '../forms/popup';
-import { parseVersionList, versionPickItems, VersionEntry } from '../versions/list';
+import {
+    formatVersionTimestamp,
+    parseVersionList,
+    versionPickItems,
+    VersionEntry,
+} from '../versions/list';
 import { safeSyncSubfolderName } from '../sync/build';
 import {
     assertSafeCompareTarget,
@@ -221,7 +226,7 @@ export async function openCompareVersion(
         projectDir,
         sidecar,
         versionName: picked.name,
-        versionTimestamp: '',
+        versionTimestamp: picked.createdAt,
         pairs: differing,
         direction: DEFAULT_COMPARE_DIRECTION,
     };
@@ -259,8 +264,10 @@ export async function swapCompareSides(deps: FormDeps): Promise<void> {
 }
 
 async function openDiffs(deps: FormDeps, session: LastCompare): Promise<void> {
-    const { projectDir, sidecar, versionName, pairs, direction } = session;
-    const title = compareTitle(versionName, direction);
+    const { projectDir, sidecar, versionName, versionTimestamp, pairs, direction } = session;
+    const stamped = formatVersionTimestamp(versionTimestamp);
+    const versionLabel = stamped ? `${versionName} (${stamped})` : versionName;
+    const title = compareTitle(versionLabel, direction);
     const active = activeRelativePath(projectDir);
     const ordered = active
         ? [

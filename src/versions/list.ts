@@ -5,6 +5,37 @@ export interface VersionEntry {
     id: string;
     name: string;
     description: string;
+    createdAt: string;
+}
+
+/**
+ * `YYYY-MM-DD HH:mm` in local time, or `''` when `iso` is empty or unparseable.
+ *
+ * Digits and separators only — `toLocaleString` is not used, so the string is
+ * the same on a machine whose locale would otherwise spell the month.
+ */
+export function formatVersionTimestamp(iso: string): string {
+    const value = iso.trim();
+    if (!value) {
+        return '';
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return '';
+    }
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return (
+        `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+        `${pad(date.getHours())}:${pad(date.getMinutes())}`
+    );
+}
+
+function versionDetail(version: VersionEntry): string {
+    const timestamp = formatVersionTimestamp(version.createdAt);
+    const parts = [timestamp, version.description].filter((part) => part !== '');
+    return parts.join(' · ') || version.id;
 }
 
 export interface VersionPickItem {
@@ -41,6 +72,7 @@ export function parseVersionList(raw: unknown): VersionEntry[] {
                 id,
                 name: text(record.name ?? record.Name) || id,
                 description: text(record.description ?? record.Description),
+                createdAt: text(record.createdAt ?? record.CreatedAt),
             };
         })
         .filter((entry): entry is VersionEntry => entry !== undefined);
@@ -61,7 +93,7 @@ export function versionSelectChoices(versions: VersionEntry[]): SelectChoice[] {
         },
         ...versions.map((version) => ({
             label: version.name,
-            description: version.description || version.id,
+            description: versionDetail(version),
             value: version.id,
         })),
     ];
@@ -74,7 +106,7 @@ export function versionSelectChoices(versions: VersionEntry[]): SelectChoice[] {
 export function versionPickItems(versions: VersionEntry[]): VersionPickItem[] {
     return versions.map((version) => ({
         label: `$(history) ${version.name}`,
-        description: version.description || version.id,
+        description: versionDetail(version),
         value: version,
     }));
 }

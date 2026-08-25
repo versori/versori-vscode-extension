@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
+    formatVersionTimestamp,
     LATEST_VERSION_LABEL,
     LATEST_VERSION_VALUE,
     parseVersionList,
@@ -16,9 +17,9 @@ import {
  * binds to "preserve input order".
  */
 const CLI_ORDER: VersionEntry[] = [
-    { id: '01M', name: 'beta', description: 'middle id, middle name' },
-    { id: '01A', name: 'alpha', description: 'lowest id, first name' },
-    { id: '01Z', name: 'gamma', description: 'highest id, last name' },
+    { id: '01M', name: 'beta', description: 'middle id, middle name', createdAt: '' },
+    { id: '01A', name: 'alpha', description: 'lowest id, first name', createdAt: '' },
+    { id: '01Z', name: 'gamma', description: 'highest id, last name', createdAt: '' },
 ];
 
 describe('parseVersionList', () => {
@@ -32,41 +33,41 @@ describe('parseVersionList', () => {
                 ],
             }),
         ).toEqual([
-            { id: '01VERSION1', name: 'v1.2', description: 'shipped Tuesday' },
-            { id: '01VERSION2', name: 'v1.1', description: 'rollback target' },
+            { id: '01VERSION1', name: 'v1.2', description: 'shipped Tuesday', createdAt: '' },
+            { id: '01VERSION2', name: 'v1.1', description: 'rollback target', createdAt: '' },
         ]);
     });
 
     it('accepts a bare array as well as the envelope', () => {
         expect(parseVersionList([{ id: '01VERSION', name: 'v1.2', description: 'd' }])).toEqual([
-            { id: '01VERSION', name: 'v1.2', description: 'd' },
+            { id: '01VERSION', name: 'v1.2', description: 'd', createdAt: '' },
         ]);
     });
 
     it('accepts the versions and results envelope keys', () => {
         expect(parseVersionList({ versions: [{ id: '01A', name: 'v1' }] })).toEqual([
-            { id: '01A', name: 'v1', description: '' },
+            { id: '01A', name: 'v1', description: '', createdAt: '' },
         ]);
         expect(parseVersionList({ results: [{ id: '01B', name: 'v2' }] })).toEqual([
-            { id: '01B', name: 'v2', description: '' },
+            { id: '01B', name: 'v2', description: '', createdAt: '' },
         ]);
     });
 
     it('drops a row with no id, because --version could only fail on it', () => {
         expect(
             parseVersionList({ items: [{ name: 'v1.2' }, { id: '01VERSION', name: 'v1.1' }] }),
-        ).toEqual([{ id: '01VERSION', name: 'v1.1', description: '' }]);
+        ).toEqual([{ id: '01VERSION', name: 'v1.1', description: '', createdAt: '' }]);
     });
 
     it('falls back to the id when a version has no usable name', () => {
         expect(parseVersionList({ items: [{ id: '01VERSION', name: '   ' }] })).toEqual([
-            { id: '01VERSION', name: '01VERSION', description: '' },
+            { id: '01VERSION', name: '01VERSION', description: '', createdAt: '' },
         ]);
     });
 
     it('gives a version with no description an empty one', () => {
         expect(parseVersionList({ items: [{ id: '01VERSION', name: 'v1.2' }] })).toEqual([
-            { id: '01VERSION', name: 'v1.2', description: '' },
+            { id: '01VERSION', name: 'v1.2', description: '', createdAt: '' },
         ]);
     });
 
@@ -75,7 +76,7 @@ describe('parseVersionList', () => {
             parseVersionList({
                 items: [{ id: '  01VERSION  ', name: '  v1.2 ', description: '  shipped  ' }],
             }),
-        ).toEqual([{ id: '01VERSION', name: 'v1.2', description: 'shipped' }]);
+        ).toEqual([{ id: '01VERSION', name: 'v1.2', description: 'shipped', createdAt: '' }]);
     });
 
     it('reads the CLI\'s "(no items)" non-JSON outputs as no versions', () => {
@@ -83,6 +84,55 @@ describe('parseVersionList', () => {
         expect(parseVersionList(null)).toEqual([]);
         expect(parseVersionList('(no items)')).toEqual([]);
         expect(parseVersionList(0)).toEqual([]);
+    });
+
+    it('reads createdAt from either casing and defaults a missing one to empty', () => {
+        expect(
+            parseVersionList({
+                items: [
+                    { id: '01A', name: 'v2', createdAt: '2026-08-24T14:05:00Z' },
+                    { id: '01B', name: 'v1', CreatedAt: '  2026-08-01T09:00:00Z  ' },
+                    { id: '01C', name: 'v0' },
+                ],
+            }),
+        ).toEqual([
+            { id: '01A', name: 'v2', description: '', createdAt: '2026-08-24T14:05:00Z' },
+            { id: '01B', name: 'v1', description: '', createdAt: '2026-08-01T09:00:00Z' },
+            { id: '01C', name: 'v0', description: '', createdAt: '' },
+        ]);
+    });
+});
+
+describe('formatVersionTimestamp', () => {
+    it('renders a valid ISO timestamp as local YYYY-MM-DD HH:mm', () => {
+        const iso = '2026-01-15T14:30:00Z';
+        const date = new Date(iso);
+        const pad = (n: number) => String(n).padStart(2, '0');
+
+        expect(formatVersionTimestamp(iso)).toBe(
+            `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+                `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+        );
+    });
+
+    it('returns empty for an empty value', () => {
+        expect(formatVersionTimestamp('')).toBe('');
+        expect(formatVersionTimestamp('   ')).toBe('');
+    });
+
+    it('returns empty for an unparseable value', () => {
+        expect(formatVersionTimestamp('not-a-date')).toBe('');
+        expect(formatVersionTimestamp('2026-99-99T99:99:99Z')).toBe('');
+    });
+
+    it('does not depend on the host locale', () => {
+        const spy = vi.spyOn(Date.prototype, 'toLocaleString');
+        const formatted = formatVersionTimestamp('2026-08-24T15:30:00.000Z');
+
+        expect(spy).not.toHaveBeenCalled();
+        expect(formatted).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+        expect(formatted).not.toMatch(/[A-Za-z]/);
+        spy.mockRestore();
     });
 });
 
@@ -107,8 +157,8 @@ describe('versionSelectChoices', () => {
 
     it('labels a row by name and falls back to the id when it has no description', () => {
         const choices = versionSelectChoices([
-            { id: '01WITHDESC', name: 'v2.0', description: 'shipped the webhook fix' },
-            { id: '01NODESC', name: 'v1.9', description: '' },
+            { id: '01WITHDESC', name: 'v2.0', description: 'shipped the webhook fix', createdAt: '' },
+            { id: '01NODESC', name: 'v1.9', description: '', createdAt: '' },
         ]);
 
         // choices[0] is Latest; the version rows follow in input order.
@@ -123,6 +173,30 @@ describe('versionSelectChoices', () => {
             value: '01NODESC',
         });
     });
+
+    it('shows the timestamp with the description, and without one', () => {
+        const stamped = formatVersionTimestamp('2026-08-24T14:05:00Z');
+        const choices = versionSelectChoices([
+            {
+                id: '01WITH',
+                name: 'v2.0',
+                description: 'shipped the webhook fix',
+                createdAt: '2026-08-24T14:05:00Z',
+            },
+            { id: '01NONE', name: 'v1.9', description: '', createdAt: '2026-08-24T14:05:00Z' },
+        ]);
+
+        expect(choices[1]).toEqual({
+            label: 'v2.0',
+            description: `${stamped} · shipped the webhook fix`,
+            value: '01WITH',
+        });
+        expect(choices[2]).toEqual({
+            label: 'v1.9',
+            description: stamped,
+            value: '01NONE',
+        });
+    });
 });
 
 describe('versionPickItems', () => {
@@ -135,7 +209,12 @@ describe('versionPickItems', () => {
     });
 
     it('labels each row with the history icon and carries the whole entry', () => {
-        const version = { id: '01VERSION', name: 'v1.2', description: 'shipped Tuesday' };
+        const version = {
+            id: '01VERSION',
+            name: 'v1.2',
+            description: 'shipped Tuesday',
+            createdAt: '',
+        };
 
         expect(versionPickItems([version])).toEqual([
             {
@@ -148,11 +227,41 @@ describe('versionPickItems', () => {
 
     it('shows the id when a version has no description to show', () => {
         expect(
-            versionPickItems([{ id: '01VERSION', name: 'v1.2', description: '' }])[0].description,
+            versionPickItems([{ id: '01VERSION', name: 'v1.2', description: '', createdAt: '' }])[0]
+                .description,
         ).toBe('01VERSION');
     });
 
     it('returns no rows for no versions', () => {
         expect(versionPickItems([])).toEqual([]);
+    });
+
+    it('shows the timestamp with the description, and without one', () => {
+        const stamped = formatVersionTimestamp('2026-08-24T14:05:00Z');
+        const withDescription = {
+            id: '01WITH',
+            name: 'v1.2',
+            description: 'shipped Tuesday',
+            createdAt: '2026-08-24T14:05:00Z',
+        };
+        const noDescription = {
+            id: '01NONE',
+            name: 'v1.1',
+            description: '',
+            createdAt: '2026-08-24T14:05:00Z',
+        };
+
+        expect(versionPickItems([withDescription, noDescription])).toEqual([
+            {
+                label: '$(history) v1.2',
+                description: `${stamped} · shipped Tuesday`,
+                value: withDescription,
+            },
+            {
+                label: '$(history) v1.1',
+                description: stamped,
+                value: noDescription,
+            },
+        ]);
     });
 });
