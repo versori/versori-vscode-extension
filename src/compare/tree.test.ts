@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { listProjectFiles, listProjectSymlinks, loadProjectIgnore } from './tree';
+import { listProjectFiles, listTreeEntries, loadProjectIgnore } from './tree';
 import { EMPTY_IGNORE } from './ignore';
 
 let root: string;
@@ -91,16 +91,34 @@ describe('listProjectFiles', () => {
     });
 });
 
-describe('listProjectSymlinks', () => {
-    it('finds nested symlinks but skips roots sync never touches', () => {
-        write('target.txt');
-        fs.mkdirSync(path.join(root, 'src'), { recursive: true });
-        fs.symlinkSync(path.join(root, 'target.txt'), path.join(root, 'src', 'linked.txt'));
-        fs.symlinkSync(path.join(root, 'target.txt'), path.join(root, '.versori'));
-        fs.mkdirSync(path.join(root, '.git'), { recursive: true });
-        fs.symlinkSync(path.join(root, 'target.txt'), path.join(root, '.git', 'linked.txt'));
+describe('listTreeEntries', () => {
+    it('returns an empty inventory for an empty folder', () => {
+        expect(listTreeEntries(root)).toEqual([]);
+    });
 
-        expect(listProjectSymlinks(root)).toEqual(['src/linked.txt']);
+    it('lists every file, directory, and other node without filtering', () => {
+        write('.git/config');
+        write('.gitignore', '*.log\n');
+        write('.versori');
+        write('ignored.log');
+        write('src/index.ts');
+        write('versori-research/asset.png');
+        fs.mkdirSync(path.join(root, 'empty'));
+        fs.symlinkSync(path.join(root, 'src'), path.join(root, 'linked-src'));
+
+        expect(listTreeEntries(root)).toEqual([
+            { path: '.git', kind: 'directory' },
+            { path: '.git/config', kind: 'file' },
+            { path: '.gitignore', kind: 'file' },
+            { path: '.versori', kind: 'file' },
+            { path: 'empty', kind: 'directory' },
+            { path: 'ignored.log', kind: 'file' },
+            { path: 'linked-src', kind: 'other' },
+            { path: 'src', kind: 'directory' },
+            { path: 'src/index.ts', kind: 'file' },
+            { path: 'versori-research', kind: 'directory' },
+            { path: 'versori-research/asset.png', kind: 'file' },
+        ]);
     });
 });
 

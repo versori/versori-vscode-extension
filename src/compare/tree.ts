@@ -4,6 +4,13 @@ import * as path from 'node:path';
 import { EMPTY_IGNORE, IgnoreMatcher, parseGitignore } from './ignore';
 import { byCodePoint } from './sort';
 
+export type TreeEntryKind = 'file' | 'directory' | 'other';
+
+export interface TreeEntry {
+    path: string;
+    kind: TreeEntryKind;
+}
+
 /**
  * Names sync refuses to touch, so compare must not diff them either.
  *
@@ -41,11 +48,15 @@ export function listProjectFiles(root: string, ignore: IgnoreMatcher): string[] 
     return found.sort(byCodePoint);
 }
 
-/** Symlinks a confirmed sync could otherwise follow while reading or writing. */
-export function listProjectSymlinks(root: string): string[] {
-    const found: string[] = [];
-    walkSymlinks(root, '', found);
-    return found.sort(byCodePoint);
+/**
+ * Every entry under an untrusted checkout root, without filtering or following
+ * symlinks. Read failures propagate so a destructive checkout cannot proceed
+ * from a partial inventory.
+ */
+export function listTreeEntries(root: string): TreeEntry[] {
+    const found: TreeEntry[] = [];
+    walkEntries(root, '', found);
+    return found.sort((a, b) => byCodePoint(a.path, b.path));
 }
 
 function walk(root: string, relative: string, ignore: IgnoreMatcher, found: string[]): void {
@@ -77,29 +88,18 @@ function walk(root: string, relative: string, ignore: IgnoreMatcher, found: stri
     }
 }
 
-function walkSymlinks(root: string, relative: string, found: string[]): void {
-    let entries: fs.Dirent[];
-    try {
-        entries = fs.readdirSync(path.join(root, relative), { withFileTypes: true });
-    } catch {
-        return;
-    }
-
+function walkEntries(root: string, relative: string, found: TreeEntry[]): void {
+    const entries = fs.readdirSync(path.join(root, relative), { withFileTypes: true });
     for (const entry of entries) {
         const relativePath = relative ? `${relative}/${entry.name}` : entry.name;
 
-        if (relative === '' && SKIPPED_ROOT_NAMES.has(entry.name)) {
-            continue;
-        }
-        if (EMPTY_IGNORE.matches(relativePath, entry.isDirectory())) {
-            continue;
-        }
-        if (entry.isSymbolicLink()) {
-            found.push(relativePath);
-            continue;
-        }
         if (entry.isDirectory()) {
-            walkSymlinks(root, relativePath, found);
+            found.push({ path: relativePath, kind: 'directory' });
+            walkEntries(root, relativePath, found);
+        } else if (entry.isFile()) {
+            found.push({ path: relativePath, kind: 'file' });
+        } else {
+            found.push({ path: relativePath, kind: 'other' });
         }
     }
 }

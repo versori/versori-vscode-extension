@@ -15,9 +15,8 @@ import {
     compareSidecarDirectory,
 } from './build';
 import { isBinaryFile } from './binary';
-import { EMPTY_IGNORE } from './ignore';
 import { foreignSidecarPaths, versionFilePaths } from './safety';
-import { loadProjectIgnore, listProjectFiles, listProjectSymlinks } from './tree';
+import { listTreeEntries, loadProjectIgnore, listProjectFiles } from './tree';
 import { ComparePair, comparePairs } from './pairs';
 
 /** Private scheme for the empty side of a one-sided diff. */
@@ -134,13 +133,14 @@ export async function openCompareVersion(
             return failure(deps, popup, `could not verify ${picked.name}`, err);
         }
 
-        const foreignFiles = foreignSidecarPaths(
-            listProjectFiles(sidecar, EMPTY_IGNORE),
-            remoteFiles,
-        );
-        const foreign = [...new Set([...foreignFiles, ...listProjectSymlinks(sidecar)])].sort();
+        let foreign: string[];
+        try {
+            foreign = foreignSidecarPaths(listTreeEntries(sidecar), remoteFiles);
+        } catch (err) {
+            return failure(deps, popup, 'could not inspect the comparison folder', err);
+        }
         if (foreign.length > 0) {
-            const noun = foreign.length === 1 ? 'file' : 'files';
+            const noun = foreign.length === 1 ? 'entry' : 'entries';
             deps.output.appendLine(
                 `compare: refusing ${sidecar}: ${foreign.length} foreign ${noun}; first is ${foreign[0]}`,
             );
