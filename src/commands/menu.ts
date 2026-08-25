@@ -16,7 +16,7 @@ import { openResourcesForm } from '../resources/panel';
 import { ENVIRONMENT_ID, environmentArgs, environmentControl } from '../results/controls';
 import { showResults } from '../results/panel';
 import { openSyncForm } from '../sync/panel';
-import { openCompareVersion } from '../compare/panel';
+import { openCompareVersion, swapCompareSides } from '../compare/panel';
 import { showVariablesPanel } from '../variables/panel';
 import { POPUP_BACK, PopupSession } from '../forms/popup';
 import { appendChord } from '../keybindings/format';
@@ -137,6 +137,18 @@ export const MENU_ACTIONS: MenuAction[] = [
         description: 'diff this folder against a saved version',
         needsProject: true,
         run: (deps, popup) => openCompareVersion(deps, popup),
+    },
+    {
+        command: 'versori.compareSwapSides',
+        title: 'Swap Compare Sides',
+        label: '$(arrow-swap) Swap compare sides',
+        description: 'flip the last compare without re-running the CLI',
+        needsProject: false,
+        run: async (deps, popup) => {
+            popup.close();
+            await swapCompareSides(deps);
+            return 'close';
+        },
     },
     {
         command: 'versori.showVersions',

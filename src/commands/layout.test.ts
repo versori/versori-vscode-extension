@@ -30,6 +30,7 @@ describe('menuLayout in a project', () => {
             'versori.saveVersion',
             'versori.syncProjectHere',
             'versori.compareVersion',
+            'versori.compareSwapSides',
             'versori.showVersions',
             'versori.resources',
             'versori.kvEntries',
@@ -54,6 +55,12 @@ describe('menuLayout in a project', () => {
     it('never lists the menu command as a row inside the menu', () => {
         expect(commands(rows)).not.toContain('versori.showMenu');
     });
+
+    it('places Swap compare sides immediately after Compare version', () => {
+        expect(commands(rows).indexOf('versori.compareSwapSides')).toBe(
+            commands(rows).indexOf('versori.compareVersion') + 1,
+        );
+    });
 });
 
 describe('menuLayout outside a project', () => {
@@ -76,6 +83,10 @@ describe('menuLayout outside a project', () => {
 
     it('does not offer Compare version without a project', () => {
         expect(commands(menuLayout(false))).not.toContain('versori.compareVersion');
+    });
+
+    it('does not offer Swap compare sides without a project', () => {
+        expect(commands(menuLayout(false))).not.toContain('versori.compareSwapSides');
     });
 
     it('uses the narrower section labels', () => {

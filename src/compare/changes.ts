@@ -1,5 +1,14 @@
 import { ComparePair } from './pairs';
 
+/**
+ * Which side of each pair is the diff original (left) vs modified (right).
+ *
+ * `version-to-working` is the default: the saved version is the baseline, so a
+ * working-only file reads as an addition. `working-to-version` is the old
+ * left-equals-working layout.
+ */
+export type CompareDirection = 'version-to-working' | 'working-to-version';
+
 /** Reads a pair's side, or undefined when that side has no file. */
 export type SideReader = (relativePath: string, side: 'working' | 'version') => Buffer | undefined;
 

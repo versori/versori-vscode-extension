@@ -17,8 +17,22 @@ import {
 import { isBinaryFile } from './binary';
 import { foreignSidecarPaths, versionFilePaths } from './safety';
 import { listTreeEntries, loadProjectIgnore, listProjectFiles } from './tree';
-import { changedPairs, SideReader } from './changes';
+import { changedPairs, CompareDirection, SideReader } from './changes';
 import { ComparePair, comparePairs } from './pairs';
+
+const DEFAULT_COMPARE_DIRECTION: CompareDirection = 'version-to-working';
+
+interface LastCompare {
+    projectDir: string;
+    sidecar: string;
+    versionName: string;
+    versionTimestamp: string;
+    pairs: ComparePair[];
+    direction: CompareDirection;
+}
+
+/** Last successful Compare in this session — swap re-opens these diffs, no CLI. */
+let lastCompare: LastCompare | undefined;
 
 /** Private scheme for the empty side of a one-sided diff. */
 export const COMPARE_EMPTY_SCHEME = 'versori-compare-empty';
@@ -203,7 +217,15 @@ export async function openCompareVersion(
         return 'close';
     }
 
-    await openDiffs(deps, projectDir, sidecar, picked.name, differing);
+    lastCompare = {
+        projectDir,
+        sidecar,
+        versionName: picked.name,
+        versionTimestamp: '',
+        pairs: differing,
+        direction: DEFAULT_COMPARE_DIRECTION,
+    };
+    await openDiffs(deps, lastCompare);
 
     // Last, deliberately: adding the first extra folder to a single-folder
     // workspace converts it to multi-root and restarts the extension host,
@@ -215,13 +237,29 @@ export async function openCompareVersion(
     return 'close';
 }
 
-async function openDiffs(
-    deps: FormDeps,
-    projectDir: string,
-    sidecar: string,
-    versionName: string,
-    pairs: ComparePair[],
-): Promise<void> {
+/**
+ * Re-open the last compare with the sides flipped.
+ *
+ * Uses the saved pairs and folders — no list, no checkout, no re-sync.
+ */
+export async function swapCompareSides(deps: FormDeps): Promise<void> {
+    if (!lastCompare) {
+        await vscode.window.showInformationMessage('Versori: run Compare Version first.');
+        return;
+    }
+
+    lastCompare = {
+        ...lastCompare,
+        direction:
+            lastCompare.direction === 'version-to-working'
+                ? 'working-to-version'
+                : 'version-to-working',
+    };
+    await openDiffs(deps, lastCompare);
+}
+
+async function openDiffs(deps: FormDeps, session: LastCompare): Promise<void> {
+    const { projectDir, sidecar, versionName, pairs, direction } = session;
     const title = `Working ↔ ${versionName}`;
     const active = activeRelativePath(projectDir);
     const ordered = active
@@ -234,11 +272,12 @@ async function openDiffs(
     // The file the user is looking at, opened as a normal diff as well as
     // inside the multi-diff, so Compare lands on something recognisable.
     if (active && ordered[0]?.relativePath === active) {
+        const sides = diffSides(projectDir, sidecar, ordered[0], direction);
         try {
             await vscode.commands.executeCommand(
                 'vscode.diff',
-                sideUri(projectDir, ordered[0], 'working'),
-                sideUri(sidecar, ordered[0], 'version'),
+                sides.original,
+                sides.modified,
                 `${active} — ${title}`,
             );
         } catch (err) {
@@ -248,22 +287,22 @@ async function openDiffs(
 
     // `vscode.changes` is a built-in command with no typings, so the triple
     // shape is not compiler-checked: [resource, left, right].
-    const resources = ordered.map((pair) => [
-        rowUri(projectDir, sidecar, pair),
-        sideUri(projectDir, pair, 'working'),
-        sideUri(sidecar, pair, 'version'),
-    ]);
+    const resources = ordered.map((pair) => {
+        const sides = diffSides(projectDir, sidecar, pair, direction);
+        return [rowUri(projectDir, sidecar, pair), sides.original, sides.modified];
+    });
 
     try {
         await vscode.commands.executeCommand('vscode.changes', title, resources);
     } catch (err) {
         deps.output.appendLine(`compare: multi-diff unavailable (${String(err)}); opening pairs`);
         for (const pair of ordered.slice(0, MAX_FALLBACK_DIFFS)) {
+            const sides = diffSides(projectDir, sidecar, pair, direction);
             try {
                 await vscode.commands.executeCommand(
                     'vscode.diff',
-                    sideUri(projectDir, pair, 'working'),
-                    sideUri(sidecar, pair, 'version'),
+                    sides.original,
+                    sides.modified,
                     `${pair.relativePath} — ${title}`,
                 );
             } catch (diffErr) {
@@ -277,6 +316,26 @@ async function openDiffs(
 
 /** Enough to be useful without opening a hundred tabs if multi-diff is missing. */
 const MAX_FALLBACK_DIFFS = 20;
+
+/**
+ * Original (left) and modified (right) uris for one pair.
+ *
+ * Under the default `version-to-working` direction a working-only file has the
+ * empty scheme on the left, so the editor renders an addition.
+ */
+function diffSides(
+    projectDir: string,
+    sidecar: string,
+    pair: ComparePair,
+    direction: CompareDirection,
+): { original: vscode.Uri; modified: vscode.Uri } {
+    const working = sideUri(projectDir, pair, 'working');
+    const version = sideUri(sidecar, pair, 'version');
+    if (direction === 'version-to-working') {
+        return { original: version, modified: working };
+    }
+    return { original: working, modified: version };
+}
 
 /**
  * The uri for one side of a pair.

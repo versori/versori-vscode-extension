@@ -57,6 +57,11 @@
         "title": "Versori: Compare Version"
       },
       {
+        "command": "versori.compareSwapSides",
+        "title": "Versori: Swap Compare Sides",
+        "icon": "$(arrow-swap)"
+      },
+      {
         "command": "versori.showVersions",
         "title": "Versori: Versions"
       },
@@ -134,6 +139,13 @@
           "command": "versori.saveVersion",
           "when": "explorerResourceIsFolder",
           "group": "versori"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "versori.compareSwapSides",
+          "when": "activeEditor == 'multiDiffEditor'",
+          "group": "navigation"
         }
       ]
     },

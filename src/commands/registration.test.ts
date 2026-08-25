@@ -15,8 +15,11 @@ const manifest = JSON.parse(
     fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'),
 ) as {
     contributes: {
-        commands: Array<{ command: string; title: string }>;
-        menus: { 'explorer/context': Contribution[] };
+        commands: Array<{ command: string; title: string; icon?: string }>;
+        menus: {
+            'explorer/context': Contribution[];
+            'editor/title': Contribution[];
+        };
     };
 };
 
@@ -44,6 +47,22 @@ describe('command contributions', () => {
             command: 'versori.compareVersion',
             when: 'explorerResourceIsFolder',
             group: 'versori',
+        });
+    });
+
+    it('declares Swap Compare Sides with its palette title and swap icon', () => {
+        expect(manifest.contributes.commands).toContainEqual({
+            command: 'versori.compareSwapSides',
+            title: 'Versori: Swap Compare Sides',
+            icon: '$(arrow-swap)',
+        });
+    });
+
+    it('offers Swap Compare Sides on the multi-diff editor title bar', () => {
+        expect(manifest.contributes.menus['editor/title']).toContainEqual({
+            command: 'versori.compareSwapSides',
+            when: "activeEditor == 'multiDiffEditor'",
+            group: 'navigation',
         });
     });
 });
