@@ -17,6 +17,7 @@ import { ENVIRONMENT_ID, environmentArgs, environmentControl } from '../results/
 import { showResults } from '../results/panel';
 import { openSyncForm } from '../sync/panel';
 import { openCompareVersion, swapCompareSides } from '../compare/panel';
+import { CompareSessionStore } from '../compare/session';
 import { showVariablesPanel } from '../variables/panel';
 import { POPUP_BACK, PopupSession } from '../forms/popup';
 import { appendChord } from '../keybindings/format';
@@ -35,6 +36,8 @@ export interface MenuDeps {
     getState: () => ResolvedState;
     /** Chord the user bound to a command, already pretty-printed. */
     chordFor: (command: string) => string | undefined;
+    /** Last compare, persisted so Swap survives the multi-root host restart. */
+    compareSession: CompareSessionStore;
 }
 
 interface ActionItem extends vscode.QuickPickItem {

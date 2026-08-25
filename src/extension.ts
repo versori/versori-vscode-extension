@@ -20,6 +20,7 @@ import { ContextResolver, EMPTY_STATE, ResolvedState } from './resolver/types';
 import { VersoriSidebar } from './sidebar';
 import { VersoriStatusBar } from './statusbar';
 import { COMPARE_EMPTY_SCHEME, compareEmptyProvider, openCompareVersion } from './compare/panel';
+import { CompareSessionStore, createCompareSessionStore } from './compare/session';
 import { openSyncForm } from './sync/panel';
 
 const MENU_COMMAND = 'versori.showMenu';
@@ -41,6 +42,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const keybindings = new KeybindingStore(context.globalStorageUri.fsPath);
     const chordFor = (command: string): string | undefined => keybindings.chordFor(command);
+    const compareSession = createCompareSessionStore(context.workspaceState);
 
     const resolver: ContextResolver = new LocalContextResolver({
         log: (message) => output.appendLine(message),
@@ -107,6 +109,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 onContextChanged: invalidateAndRefresh,
                 getState: () => lastState,
                 chordFor,
+                compareSession,
             });
         }),
     );
@@ -119,6 +122,7 @@ export function activate(context: vscode.ExtensionContext): void {
         onContextChanged: invalidateAndRefresh,
         getState: () => lastState,
         chordFor,
+        compareSession,
     });
 
     /**
@@ -247,6 +251,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 cliPath,
                 resolver,
                 output,
+                compareSession,
             );
         }),
         vscode.commands.registerCommand(CONTEXT_SAVE_COMMAND, async (uri?: vscode.Uri) => {
@@ -261,6 +266,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 cliPath,
                 resolver,
                 output,
+                compareSession,
             );
         }),
         vscode.commands.registerCommand(CONTEXT_COMPARE_COMMAND, async (uri?: vscode.Uri) => {
@@ -275,6 +281,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 cliPath,
                 resolver,
                 output,
+                compareSession,
             );
         }),
     );
@@ -321,7 +328,7 @@ interface Scope {
 }
 
 type ProjectContextForm = (
-    deps: FormDeps,
+    deps: FormDeps & { compareSession: CompareSessionStore },
     popup: PopupSession,
 ) => Promise<'menu' | 'close'>;
 
@@ -332,6 +339,7 @@ async function runProjectContextForm(
     cliPath: () => string | undefined,
     resolver: ContextResolver,
     output: vscode.OutputChannel,
+    compareSession: CompareSessionStore,
 ): Promise<void> {
     const bin = cliPath();
     if (!bin) {
@@ -363,7 +371,7 @@ async function runProjectContextForm(
             return;
         }
 
-        await form({ bin, state, output }, popup);
+        await form({ bin, state, output, compareSession }, popup);
     } finally {
         popup.dispose();
     }

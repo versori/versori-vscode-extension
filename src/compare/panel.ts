@@ -24,16 +24,16 @@ import { foreignSidecarPaths, versionFilePaths } from './safety';
 import { listTreeEntries, loadProjectIgnore, listProjectFiles } from './tree';
 import { changedPairs, CompareDirection, compareTitle, SideReader } from './changes';
 import { ComparePair, comparePairs } from './pairs';
+import {
+    CompareSessionStore,
+    LastCompare,
+    compareSessionStillOnDisk,
+} from './session';
 
 const DEFAULT_COMPARE_DIRECTION: CompareDirection = 'version-to-working';
 
-interface LastCompare {
-    projectDir: string;
-    sidecar: string;
-    versionName: string;
-    versionTimestamp: string;
-    pairs: ComparePair[];
-    direction: CompareDirection;
+export interface CompareDeps extends FormDeps {
+    compareSession: CompareSessionStore;
 }
 
 /** Last successful Compare in this session — swap re-opens these diffs, no CLI. */
@@ -62,7 +62,7 @@ export const compareEmptyProvider: vscode.TextDocumentContentProvider = {
  * throwaway folder from claiming itself as a project.
  */
 export async function openCompareVersion(
-    deps: FormDeps,
+    deps: CompareDeps,
     popup: PopupSession,
 ): Promise<'menu' | 'close'> {
     const { projectId, projectDir } = deps.state;
@@ -230,6 +230,9 @@ export async function openCompareVersion(
         pairs: differing,
         direction: DEFAULT_COMPARE_DIRECTION,
     };
+    // Must land in workspaceState before addWorkspaceFolder: the first extra
+    // folder restarts the host and wipes the in-memory value above.
+    await deps.compareSession.save(lastCompare);
     await openDiffs(deps, lastCompare);
 
     // Last, deliberately: adding the first extra folder to a single-folder
@@ -247,20 +250,32 @@ export async function openCompareVersion(
  *
  * Uses the saved pairs and folders — no list, no checkout, no re-sync.
  */
-export async function swapCompareSides(deps: FormDeps): Promise<void> {
-    if (!lastCompare) {
+export async function swapCompareSides(deps: CompareDeps): Promise<void> {
+    const session = recallCompare(deps);
+    if (!session) {
         await vscode.window.showInformationMessage('Versori: run Compare Version first.');
         return;
     }
 
     lastCompare = {
-        ...lastCompare,
+        ...session,
         direction:
-            lastCompare.direction === 'version-to-working'
+            session.direction === 'version-to-working'
                 ? 'working-to-version'
                 : 'version-to-working',
     };
+    await deps.compareSession.save(lastCompare);
     await openDiffs(deps, lastCompare);
+}
+
+function recallCompare(deps: CompareDeps): LastCompare | undefined {
+    const session = lastCompare ?? deps.compareSession.get();
+    if (!session || !compareSessionStillOnDisk(session)) {
+        lastCompare = undefined;
+        return undefined;
+    }
+    lastCompare = session;
+    return session;
 }
 
 async function openDiffs(deps: FormDeps, session: LastCompare): Promise<void> {
