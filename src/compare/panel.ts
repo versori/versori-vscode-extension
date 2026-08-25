@@ -17,6 +17,7 @@ import {
 import { isBinaryFile } from './binary';
 import { foreignSidecarPaths, versionFilePaths } from './safety';
 import { listTreeEntries, loadProjectIgnore, listProjectFiles } from './tree';
+import { changedPairs, SideReader } from './changes';
 import { ComparePair, comparePairs } from './pairs';
 
 /** Private scheme for the empty side of a one-sided diff. */
@@ -182,9 +183,19 @@ export async function openCompareVersion(
         listProjectFiles(sidecar, ignore),
     ).filter((pair) => !isBinaryPair(projectDir, sidecar, pair));
 
-    if (pairs.length === 0) {
+    const readSide: SideReader = (relativePath, side) => {
+        const root = side === 'working' ? projectDir : sidecar;
+        try {
+            return fs.readFileSync(path.join(root, relativePath));
+        } catch {
+            return undefined;
+        }
+    };
+    const differing = changedPairs(pairs, readSide);
+
+    if (differing.length === 0) {
         await vscode.window.showInformationMessage(
-            `Versori: nothing to compare between the working folder and ${picked.name}.`,
+            `Versori: the working folder already matches ${picked.name}.`,
         );
         if (!addWorkspaceFolder(sidecar, picked.name)) {
             deps.output.appendLine(`compare: could not add ${sidecar} to the workspace`);
@@ -192,7 +203,7 @@ export async function openCompareVersion(
         return 'close';
     }
 
-    await openDiffs(deps, projectDir, sidecar, picked.name, pairs);
+    await openDiffs(deps, projectDir, sidecar, picked.name, differing);
 
     // Last, deliberately: adding the first extra folder to a single-folder
     // workspace converts it to multi-root and restarts the extension host,
