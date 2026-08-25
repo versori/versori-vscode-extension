@@ -9,6 +9,14 @@ import { ComparePair } from './pairs';
  */
 export type CompareDirection = 'version-to-working' | 'working-to-version';
 
+/** Multi-diff / per-file title that states which side is the baseline. */
+export function compareTitle(versionLabel: string, direction: CompareDirection): string {
+    if (direction === 'version-to-working') {
+        return `${versionLabel} → Working copy`;
+    }
+    return `Working copy → ${versionLabel}`;
+}
+
 /** Reads a pair's side, or undefined when that side has no file. */
 export type SideReader = (relativePath: string, side: 'working' | 'version') => Buffer | undefined;
 

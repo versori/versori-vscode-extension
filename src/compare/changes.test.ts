@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { changedPairs, SideReader } from './changes';
+import { changedPairs, compareTitle, SideReader } from './changes';
 import { ComparePair } from './pairs';
 
 function pair(
@@ -71,5 +71,15 @@ describe('changedPairs', () => {
             ),
         ).toEqual([both]);
         expect(changedPairs([both], reader({}))).toEqual([both]);
+    });
+});
+
+describe('compareTitle', () => {
+    it('names the version as the baseline under version-to-working', () => {
+        expect(compareTitle('v1.2', 'version-to-working')).toBe('v1.2 → Working copy');
+    });
+
+    it('names the working copy as the baseline under working-to-version', () => {
+        expect(compareTitle('v1.2', 'working-to-version')).toBe('Working copy → v1.2');
     });
 });

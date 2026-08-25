@@ -17,7 +17,7 @@ import {
 import { isBinaryFile } from './binary';
 import { foreignSidecarPaths, versionFilePaths } from './safety';
 import { listTreeEntries, loadProjectIgnore, listProjectFiles } from './tree';
-import { changedPairs, CompareDirection, SideReader } from './changes';
+import { changedPairs, CompareDirection, compareTitle, SideReader } from './changes';
 import { ComparePair, comparePairs } from './pairs';
 
 const DEFAULT_COMPARE_DIRECTION: CompareDirection = 'version-to-working';
@@ -260,7 +260,7 @@ export async function swapCompareSides(deps: FormDeps): Promise<void> {
 
 async function openDiffs(deps: FormDeps, session: LastCompare): Promise<void> {
     const { projectDir, sidecar, versionName, pairs, direction } = session;
-    const title = `Working ↔ ${versionName}`;
+    const title = compareTitle(versionName, direction);
     const active = activeRelativePath(projectDir);
     const ordered = active
         ? [
