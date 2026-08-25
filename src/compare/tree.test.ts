@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { listProjectFiles, loadProjectIgnore } from './tree';
+import { listProjectFiles, listProjectSymlinks, loadProjectIgnore } from './tree';
 import { EMPTY_IGNORE } from './ignore';
 
 let root: string;
@@ -88,6 +88,19 @@ describe('listProjectFiles', () => {
 
     it('returns an empty list for a root that does not exist', () => {
         expect(listProjectFiles(path.join(root, 'missing'), EMPTY_IGNORE)).toEqual([]);
+    });
+});
+
+describe('listProjectSymlinks', () => {
+    it('finds nested symlinks but skips roots sync never touches', () => {
+        write('target.txt');
+        fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+        fs.symlinkSync(path.join(root, 'target.txt'), path.join(root, 'src', 'linked.txt'));
+        fs.symlinkSync(path.join(root, 'target.txt'), path.join(root, '.versori'));
+        fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+        fs.symlinkSync(path.join(root, 'target.txt'), path.join(root, '.git', 'linked.txt'));
+
+        expect(listProjectSymlinks(root)).toEqual(['src/linked.txt']);
     });
 });
 

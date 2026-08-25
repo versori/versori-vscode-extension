@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
@@ -7,12 +8,16 @@ import { POPUP_BACK, PopupSession } from '../forms/popup';
 import { parseVersionList, versionPickItems, VersionEntry } from '../versions/list';
 import { safeSyncSubfolderName } from '../sync/build';
 import {
-    buildCompareArgs,
+    assertSafeCompareTarget,
+    buildCompareCheckoutSpec,
+    buildCompareFilesSpec,
     collidingSidecarNames,
     compareSidecarDirectory,
 } from './build';
 import { isBinaryFile } from './binary';
-import { loadProjectIgnore, listProjectFiles } from './tree';
+import { EMPTY_IGNORE } from './ignore';
+import { foreignSidecarPaths, versionFilePaths } from './safety';
+import { loadProjectIgnore, listProjectFiles, listProjectSymlinks } from './tree';
 import { ComparePair, comparePairs } from './pairs';
 
 /** Private scheme for the empty side of a one-sided diff. */
@@ -85,8 +90,8 @@ export async function openCompareVersion(
         return 'menu';
     }
 
-    // No confirmation screen: the sidecar is a fresh sibling folder, so there
-    // is nothing of the user's to destroy.
+    // No confirmation screen: an existing folder must prove that every file is
+    // from this exact version before the confirmed checkout can refresh it.
     popup.close();
 
     const collisions = collidingSidecarNames(versions);
@@ -102,16 +107,66 @@ export async function openCompareVersion(
         return failure(deps, popup, 'could not choose a comparison folder', err);
     }
 
-    const args = buildCompareArgs({ projectId, directory: sidecar, versionId: picked.id });
+    let sidecarHasEntries: boolean;
+    try {
+        sidecarHasEntries = fs.existsSync(sidecar) && fs.readdirSync(sidecar).length > 0;
+    } catch (err) {
+        return failure(deps, popup, 'could not inspect the comparison folder', err);
+    }
+
+    if (sidecarHasEntries) {
+        let remoteFiles: string[];
+        try {
+            const raw = await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Window,
+                    title: 'Versori: checking comparison folder',
+                },
+                () =>
+                    runJson<unknown>(
+                        deps.bin,
+                        buildCompareFilesSpec(deps.state, projectId, picked.id),
+                    ),
+            );
+            remoteFiles = versionFilePaths(raw);
+        } catch (err) {
+            return failure(deps, popup, `could not verify ${picked.name}`, err);
+        }
+
+        const foreignFiles = foreignSidecarPaths(
+            listProjectFiles(sidecar, EMPTY_IGNORE),
+            remoteFiles,
+        );
+        const foreign = [...new Set([...foreignFiles, ...listProjectSymlinks(sidecar)])].sort();
+        if (foreign.length > 0) {
+            const noun = foreign.length === 1 ? 'file' : 'files';
+            deps.output.appendLine(
+                `compare: refusing ${sidecar}: ${foreign.length} foreign ${noun}; first is ${foreign[0]}`,
+            );
+            await vscode.window.showWarningMessage(
+                `Versori: ${path.basename(sidecar)} contains ${foreign.length} foreign ${noun}, including ${foreign[0]}. Compare was cancelled.`,
+            );
+            return 'menu';
+        }
+    }
+
+    const checkoutSpec = buildCompareCheckoutSpec(deps.state, {
+        projectId,
+        directory: sidecar,
+        versionId: picked.id,
+    });
 
     try {
+        // Re-check after the network preflight so replacing the root with a
+        // symlink cannot redirect the confirmed sync while Compare is waiting.
+        assertSafeCompareTarget(projectDir, sidecar);
         await vscode.window.withProgress(
             {
                 location: vscode.ProgressLocation.Notification,
                 title: `Versori: checking out ${picked.name}`,
             },
             // No cwd: the sidecar does not exist yet and has no .versori to read.
-            () => run(deps.bin, { args, json: false }),
+            () => run(deps.bin, checkoutSpec),
         );
     } catch (err) {
         return failure(deps, popup, `could not check out ${picked.name}`, err);

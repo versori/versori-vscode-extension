@@ -41,6 +41,13 @@ export function listProjectFiles(root: string, ignore: IgnoreMatcher): string[] 
     return found.sort(byCodePoint);
 }
 
+/** Symlinks a confirmed sync could otherwise follow while reading or writing. */
+export function listProjectSymlinks(root: string): string[] {
+    const found: string[] = [];
+    walkSymlinks(root, '', found);
+    return found.sort(byCodePoint);
+}
+
 function walk(root: string, relative: string, ignore: IgnoreMatcher, found: string[]): void {
     let entries: fs.Dirent[];
     try {
@@ -67,5 +74,32 @@ function walk(root: string, relative: string, ignore: IgnoreMatcher, found: stri
             found.push(relativePath);
         }
         // Symlinks and other node types are skipped: sync writes plain files.
+    }
+}
+
+function walkSymlinks(root: string, relative: string, found: string[]): void {
+    let entries: fs.Dirent[];
+    try {
+        entries = fs.readdirSync(path.join(root, relative), { withFileTypes: true });
+    } catch {
+        return;
+    }
+
+    for (const entry of entries) {
+        const relativePath = relative ? `${relative}/${entry.name}` : entry.name;
+
+        if (relative === '' && SKIPPED_ROOT_NAMES.has(entry.name)) {
+            continue;
+        }
+        if (EMPTY_IGNORE.matches(relativePath, entry.isDirectory())) {
+            continue;
+        }
+        if (entry.isSymbolicLink()) {
+            found.push(relativePath);
+            continue;
+        }
+        if (entry.isDirectory()) {
+            walkSymlinks(root, relativePath, found);
+        }
     }
 }

@@ -1,12 +1,34 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { ResolvedState } from '../resolver/types';
 import {
+    assertSafeCompareTarget,
     buildCompareArgs,
+    buildCompareCheckoutSpec,
+    buildCompareFilesSpec,
     collidingSidecarNames,
     compareSidecarDirectory,
     compareSidecarName,
 } from './build';
+
+const pinned: ResolvedState = {
+    projectId: '01PROJECT',
+    projectDir: '/w/shopify',
+    contextName: 'customer-a',
+    activeContextName: 'customer-b',
+    source: 'versori-file',
+    overridesActive: true,
+};
+
+const active: ResolvedState = {
+    ...pinned,
+    contextName: 'customer-b',
+    source: 'active',
+    overridesActive: false,
+};
 
 describe('buildCompareArgs', () => {
     it('builds the full sidecar checkout command', () => {
@@ -77,6 +99,43 @@ describe('buildCompareArgs', () => {
                 );
             }
         }
+    });
+});
+
+describe('compare command specs', () => {
+    const values = {
+        projectId: '01PROJECT',
+        directory: '/w/shopify-v1',
+        versionId: '01VERSION',
+    };
+
+    it('pins both safety calls to the project context without using the sidecar as cwd', () => {
+        expect(buildCompareCheckoutSpec(pinned, values)).toEqual({
+            args: buildCompareArgs(values),
+            json: false,
+            context: 'customer-a',
+        });
+        expect(buildCompareFilesSpec(pinned, values.projectId, values.versionId)).toEqual({
+            args: [
+                'projects',
+                'files',
+                '--project',
+                '01PROJECT',
+                '--version',
+                '01VERSION',
+            ],
+            context: 'customer-a',
+        });
+
+        expect(buildCompareCheckoutSpec(pinned, values)).not.toHaveProperty('cwd');
+        expect(buildCompareFilesSpec(pinned, values.projectId, values.versionId)).not.toHaveProperty(
+            'cwd',
+        );
+    });
+
+    it('uses the active CLI context implicitly when the project has no context pin', () => {
+        expect(buildCompareCheckoutSpec(active, values).context).toBeUndefined();
+        expect(buildCompareFilesSpec(active, values.projectId, values.versionId).context).toBeUndefined();
     });
 });
 
@@ -165,6 +224,29 @@ describe('compareSidecarDirectory', () => {
     it('appends the id suffix to the sibling name when the version name collides', () => {
         expect(compareSidecarDirectory('/w/shopify', 'a/b', '01VERSIONLONGID', true)).toBe(
             path.resolve('/w/shopify-a - b-01VERSIO'),
+        );
+    });
+
+    it('refuses a symlink at the sidecar path', () => {
+        const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'versori-sidecar-'));
+        try {
+            const project = path.join(parent, 'shopify');
+            const elsewhere = path.join(parent, 'elsewhere');
+            fs.mkdirSync(project);
+            fs.mkdirSync(elsewhere);
+            fs.symlinkSync(elsewhere, path.join(parent, 'shopify-v1'));
+
+            expect(() => compareSidecarDirectory(project, 'v1', '01VERSION', false)).toThrow(
+                /symbolic link/,
+            );
+        } finally {
+            fs.rmSync(parent, { recursive: true, force: true });
+        }
+    });
+
+    it('keeps the lexical project-folder guard', () => {
+        expect(() => assertSafeCompareTarget('/w/shopify', '/w/shopify')).toThrow(
+            /cannot be the project folder/,
         );
     });
 });

@@ -1,5 +1,9 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { CommandSpec } from '../cli';
+import { contextFor } from '../commands/target';
+import { ResolvedState } from '../resolver/types';
 import { safeSyncSubfolderName } from '../sync/build';
 import { VersionEntry } from '../versions/list';
 
@@ -37,6 +41,37 @@ export function buildCompareArgs(values: CompareValues): string[] {
         '--confirm',
         '--no-pin',
     ];
+}
+
+/** CLI invocation for the destructive sidecar checkout. */
+export function buildCompareCheckoutSpec(
+    state: ResolvedState,
+    values: CompareValues,
+): CommandSpec {
+    return {
+        args: buildCompareArgs(values),
+        json: false,
+        context: contextFor(state),
+    };
+}
+
+/** CLI invocation used to prove an existing sidecar belongs to this version. */
+export function buildCompareFilesSpec(
+    state: ResolvedState,
+    projectId: string,
+    versionId: string,
+): CommandSpec {
+    return {
+        args: [
+            'projects',
+            'files',
+            '--project',
+            projectId.trim(),
+            '--version',
+            versionId.trim(),
+        ],
+        context: contextFor(state),
+    };
 }
 
 /**
@@ -84,12 +119,59 @@ export function compareSidecarDirectory(
     const suffix = compareSidecarName(versionName, versionId, collides);
     const sidecar = path.join(path.dirname(project), `${path.basename(project)}-${suffix}`);
 
-    if (path.resolve(sidecar) === project) {
-        // Unreachable while the suffix is non-empty, but this is the one thing a
-        // --confirm sync into the wrong path would destroy, so it is checked
-        // rather than reasoned about.
+    assertSafeCompareTarget(project, sidecar);
+
+    return sidecar;
+}
+
+/**
+ * Refuse any target that can resolve to the working project.
+ *
+ * The lexical check protects the normal non-existent-target case. Existing
+ * paths are also compared canonically, and a symlink target is never reusable:
+ * the CLI follows symlinks while writing a confirmed sync.
+ */
+export function assertSafeCompareTarget(projectDir: string, sidecarDir: string): void {
+    const project = path.resolve(projectDir);
+    const sidecar = path.resolve(sidecarDir);
+
+    if (sidecar === project) {
         throw new Error('the comparison folder cannot be the project folder');
     }
 
-    return sidecar;
+    const sidecarStat = lstatIfExists(sidecar);
+    if (sidecarStat?.isSymbolicLink()) {
+        throw new Error('the comparison folder cannot be a symbolic link');
+    }
+    if (sidecarStat && !sidecarStat.isDirectory()) {
+        throw new Error('the comparison path already exists and is not a folder');
+    }
+
+    const canonicalProject = realpathIfExists(project) ?? project;
+    const canonicalSidecar = sidecarStat ? fs.realpathSync(sidecar) : sidecar;
+    if (canonicalSidecar === canonicalProject) {
+        throw new Error('the comparison folder cannot resolve to the project folder');
+    }
+}
+
+function lstatIfExists(target: string): fs.Stats | undefined {
+    try {
+        return fs.lstatSync(target);
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+            return undefined;
+        }
+        throw err;
+    }
+}
+
+function realpathIfExists(target: string): string | undefined {
+    try {
+        return fs.realpathSync(target);
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+            return undefined;
+        }
+        throw err;
+    }
 }
