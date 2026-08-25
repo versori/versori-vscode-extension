@@ -186,6 +186,9 @@ export async function openCompareVersion(
         await vscode.window.showInformationMessage(
             `Versori: nothing to compare between the working folder and ${picked.name}.`,
         );
+        if (!addWorkspaceFolder(sidecar, picked.name)) {
+            deps.output.appendLine(`compare: could not add ${sidecar} to the workspace`);
+        }
         return 'close';
     }
 
@@ -194,7 +197,9 @@ export async function openCompareVersion(
     // Last, deliberately: adding the first extra folder to a single-folder
     // workspace converts it to multi-root and restarts the extension host,
     // which would abort everything above.
-    addWorkspaceFolder(sidecar, picked.name);
+    if (!addWorkspaceFolder(sidecar, picked.name)) {
+        deps.output.appendLine(`compare: could not add ${sidecar} to the workspace`);
+    }
 
     return 'close';
 }
@@ -319,15 +324,15 @@ function activeRelativePath(projectDir: string): string | undefined {
     return relative.split(path.sep).join('/');
 }
 
-function addWorkspaceFolder(sidecar: string, versionName: string): void {
+function addWorkspaceFolder(sidecar: string, versionName: string): boolean {
     const already = (vscode.workspace.workspaceFolders ?? []).some(
         (folder) => path.resolve(folder.uri.fsPath) === path.resolve(sidecar),
     );
     if (already) {
-        return;
+        return true;
     }
 
-    vscode.workspace.updateWorkspaceFolders(
+    return vscode.workspace.updateWorkspaceFolders(
         vscode.workspace.workspaceFolders?.length ?? 0,
         null,
         { uri: vscode.Uri.file(sidecar), name: `${path.basename(sidecar)} (${versionName})` },
