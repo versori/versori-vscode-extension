@@ -73,6 +73,7 @@ export async function openCompareVersion(
     }
 
     if (versions.length === 0) {
+        deps.output.appendLine('compare: no saved versions');
         popup.close();
         await vscode.window.showWarningMessage(
             'Versori: this project has no saved versions to compare against.',
