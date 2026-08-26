@@ -253,5 +253,3 @@ repo. That is deliberate: the resolver is a second implementation of precedence 
 the Go code, and those tests are what catch drift. If the CLI ever gains
 `versori context show --directory`, write a `CliContextResolver` against the same
 `ContextResolver` interface and swap it in `extension.ts` — nothing else needs to change.
-
-The design lives in `docs/superpowers/specs/` in the source repository.
