@@ -36,7 +36,7 @@ export interface MenuDeps {
     getState: () => ResolvedState;
     /** Chord the user bound to a command, already pretty-printed. */
     chordFor: (command: string) => string | undefined;
-    /** Last compare, persisted so Swap survives the multi-root host restart. */
+    /** Last compare, persisted so Swap survives a window reload. */
     compareSession: CompareSessionStore;
 }
 

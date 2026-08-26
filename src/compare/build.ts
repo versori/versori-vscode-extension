@@ -94,6 +94,9 @@ export function collidingSidecarNames(versions: VersionEntry[]): Set<string> {
     );
 }
 
+/** Prefix of the working-directory folder a version is checked out into. */
+export const COMPARE_SIDECAR_PREFIX = 'versori-compare-';
+
 export function compareSidecarName(
     versionName: string,
     versionId: string,
@@ -103,11 +106,19 @@ export function compareSidecarName(
     return collides ? `${sanitized}-${versionId.slice(0, 8)}` : sanitized;
 }
 
+/** True for a root folder Compare Version would check a snapshot into. */
+export function isCompareSidecarRootName(name: string): boolean {
+    return name.startsWith(COMPARE_SIDECAR_PREFIX);
+}
+
 /**
- * The sibling folder a version is checked out into.
+ * The working-directory folder a version is checked out into.
  *
- * A sibling rather than a child, so a re-sync of the working project never
- * sees the comparison folder as a local-only file to delete.
+ * A child rather than a sibling, so the checkout appears in the already-open
+ * folder and does not need a second workspace root. The `versori-compare-`
+ * prefix keeps it off real project paths (a version named `src` must not
+ * overwrite `src/`). The tree walker skips these roots so they are not
+ * diffs against themselves.
  */
 export function compareSidecarDirectory(
     projectDir: string,
@@ -117,7 +128,7 @@ export function compareSidecarDirectory(
 ): string {
     const project = path.resolve(projectDir);
     const suffix = compareSidecarName(versionName, versionId, collides);
-    const sidecar = path.join(path.dirname(project), `${path.basename(project)}-${suffix}`);
+    const sidecar = path.join(project, `${COMPARE_SIDECAR_PREFIX}${suffix}`);
 
     assertSafeCompareTarget(project, sidecar);
 
@@ -138,6 +149,9 @@ export function assertSafeCompareTarget(projectDir: string, sidecarDir: string):
     if (sidecar === project) {
         throw new Error('the comparison folder cannot be the project folder');
     }
+    if (!isInsideDirectory(project, sidecar)) {
+        throw new Error('the comparison folder must be inside the project folder');
+    }
 
     const sidecarStat = lstatIfExists(sidecar);
     if (sidecarStat?.isSymbolicLink()) {
@@ -152,6 +166,14 @@ export function assertSafeCompareTarget(projectDir: string, sidecarDir: string):
     if (canonicalSidecar === canonicalProject) {
         throw new Error('the comparison folder cannot resolve to the project folder');
     }
+    if (sidecarStat && !isInsideDirectory(canonicalProject, canonicalSidecar)) {
+        throw new Error('the comparison folder must be inside the project folder');
+    }
+}
+
+function isInsideDirectory(parent: string, child: string): boolean {
+    const relative = path.relative(parent, child);
+    return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 function lstatIfExists(target: string): fs.Stats | undefined {

@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { isCompareSidecarRootName } from './build';
 import { EMPTY_IGNORE, IgnoreMatcher, parseGitignore } from './ignore';
 import { byCodePoint } from './sort';
 
@@ -17,7 +18,9 @@ export interface TreeEntry {
  * `.versori` is the project pin — never synced, never deleted. `versori-research`
  * is `assets.DefaultAssetsDir` in the CLI: assets are handled by `--assets` and
  * are always the project's *current* assets, so they are never part of a
- * version snapshot and would always read as deletions.
+ * version snapshot and would always read as deletions. `versori-compare-*` is
+ * skipped by prefix in the walker: it is the throwaway checkout Compare writes
+ * into this folder, and including it would diff the snapshot against itself.
  */
 const SKIPPED_ROOT_NAMES = new Set(['.versori', 'versori-research']);
 
@@ -70,7 +73,10 @@ function walk(root: string, relative: string, ignore: IgnoreMatcher, found: stri
     for (const entry of entries) {
         const relativePath = relative ? `${relative}/${entry.name}` : entry.name;
 
-        if (relative === '' && SKIPPED_ROOT_NAMES.has(entry.name)) {
+        if (
+            relative === '' &&
+            (SKIPPED_ROOT_NAMES.has(entry.name) || isCompareSidecarRootName(entry.name))
+        ) {
             continue;
         }
         if (ignore.matches(relativePath, entry.isDirectory())) {

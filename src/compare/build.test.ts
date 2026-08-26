@@ -175,19 +175,19 @@ describe('compareSidecarName', () => {
 });
 
 describe('compareSidecarDirectory', () => {
-    it('checks a version out beside the project, never inside it', () => {
+    it('checks a version out inside the project, never beside it', () => {
         expect(compareSidecarDirectory('/w/shopify', 'v1.2', '01VERSION', false)).toBe(
-            path.resolve('/w/shopify-v1.2'),
+            path.resolve('/w/shopify/versori-compare-v1.2'),
         );
     });
 
     it('normalises a trailing separator on the project directory', () => {
         expect(compareSidecarDirectory('/w/shopify/', 'v1.2', '01VERSION', false)).toBe(
-            path.resolve('/w/shopify-v1.2'),
+            path.resolve('/w/shopify/versori-compare-v1.2'),
         );
     });
 
-    it('stays a sibling of the project for every unusable version name', () => {
+    it('stays a child of the project for every unusable version name', () => {
         const projectDir = '/w/shopify';
         const project = path.resolve(projectDir);
         const hostileNames = ['', '   ', '.', '..', '/', 'a/b', 'a:b*c?', 'a\u0001b', 'plain'];
@@ -196,34 +196,32 @@ describe('compareSidecarDirectory', () => {
             const sidecar = compareSidecarDirectory(projectDir, name, '01VERSION', false);
 
             expect(sidecar).not.toBe(project);
-            expect(path.dirname(sidecar)).toBe(path.dirname(project));
-            expect(path.basename(sidecar).startsWith(`${path.basename(project)}-`)).toBe(true);
-            expect(path.basename(sidecar).length).toBeGreaterThan(
-                path.basename(project).length + 1,
-            );
+            expect(path.dirname(sidecar)).toBe(project);
+            expect(path.basename(sidecar).startsWith('versori-compare-')).toBe(true);
+            expect(path.basename(sidecar).length).toBeGreaterThan('versori-compare-'.length);
         }
     });
 
     it('falls back to the placeholder folder name for a name that sanitises away', () => {
         for (const name of ['', '   ', '.', '..']) {
             expect(compareSidecarDirectory('/w/shopify', name, '01VERSION', false)).toBe(
-                path.resolve('/w/shopify-versori-project'),
+                path.resolve('/w/shopify/versori-compare-versori-project'),
             );
         }
     });
 
     it('replaces separators and reserved characters rather than nesting on them', () => {
         expect(compareSidecarDirectory('/w/shopify', 'a/b', '01VERSION', false)).toBe(
-            path.resolve('/w/shopify-a - b'),
+            path.resolve('/w/shopify/versori-compare-a - b'),
         );
         expect(compareSidecarDirectory('/w/shopify', 'a:b*c?', '01VERSION', false)).toBe(
-            path.resolve('/w/shopify-a-b-c-'),
+            path.resolve('/w/shopify/versori-compare-a-b-c-'),
         );
     });
 
-    it('appends the id suffix to the sibling name when the version name collides', () => {
+    it('appends the id suffix to the child name when the version name collides', () => {
         expect(compareSidecarDirectory('/w/shopify', 'a/b', '01VERSIONLONGID', true)).toBe(
-            path.resolve('/w/shopify-a - b-01VERSIO'),
+            path.resolve('/w/shopify/versori-compare-a - b-01VERSIO'),
         );
     });
 
@@ -234,7 +232,7 @@ describe('compareSidecarDirectory', () => {
             const elsewhere = path.join(parent, 'elsewhere');
             fs.mkdirSync(project);
             fs.mkdirSync(elsewhere);
-            fs.symlinkSync(elsewhere, path.join(parent, 'shopify-v1'));
+            fs.symlinkSync(elsewhere, path.join(project, 'versori-compare-v1'));
 
             expect(() => compareSidecarDirectory(project, 'v1', '01VERSION', false)).toThrow(
                 /symbolic link/,
@@ -247,6 +245,12 @@ describe('compareSidecarDirectory', () => {
     it('keeps the lexical project-folder guard', () => {
         expect(() => assertSafeCompareTarget('/w/shopify', '/w/shopify')).toThrow(
             /cannot be the project folder/,
+        );
+    });
+
+    it('refuses a sibling of the project, which used to be the checkout location', () => {
+        expect(() => assertSafeCompareTarget('/w/shopify', '/w/shopify-v1.2')).toThrow(
+            /inside the project folder/,
         );
     });
 });

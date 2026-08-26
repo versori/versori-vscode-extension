@@ -36,10 +36,9 @@ const DIRECTIONS = new Set<CompareDirection>(['version-to-working', 'working-to-
 /**
  * Rehydrate a stored session, or treat it as absent.
  *
- * A host restart is the normal path here: the first extra workspace folder
- * kills the in-memory value. The stored copy can also be stale (sidecar
- * deleted, project moved) or a leftover from an older shape, so a missing
- * path or a malformed value is absent — never a throw.
+ * The stored copy can be stale (sidecar deleted, project moved) or a leftover
+ * from an older shape, so a missing path or a malformed value is absent —
+ * never a throw.
  */
 export function createCompareSessionStore(
     memento: CompareSessionMemento,
