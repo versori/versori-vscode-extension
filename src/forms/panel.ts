@@ -28,6 +28,7 @@ import {
     currentFirst,
     enterField,
     fieldSummary,
+    selectChoices,
     formActionLabel,
     goBack,
     requiresConfirmation,
@@ -420,14 +421,21 @@ async function editField(
     }
 
     if (field.kind === 'select') {
+        const choices = selectChoices(field);
+        const current = typeof state.values[field.id] === 'string'
+            ? (state.values[field.id] as string)
+            : undefined;
+        // currentFirst compares by identity, so hand it the element from this
+        // same array rather than a freshly built object.
+        const selected = choices.find((choice) => choice.value === current);
+
         return popup.choose({
             ...screen,
-            items: currentFirst(
-                field.options,
-                typeof state.values[field.id] === 'string'
-                    ? (state.values[field.id] as string)
-                    : undefined,
-            ).map((option) => ({ label: option, value: option })),
+            items: currentFirst(choices, selected).map((choice) => ({
+                label: choice.label,
+                description: choice.description,
+                value: choice.value,
+            })),
         });
     }
 

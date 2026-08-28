@@ -51,6 +51,8 @@ export function menuLayout(inProject: boolean): MenuRow[] {
         action('versori.deployProject'),
         action('versori.saveVersion'),
         action('versori.syncProjectHere'),
+        action('versori.compareVersion'),
+        action('versori.compareSwapSides'),
         action('versori.showVersions'),
         action('versori.resources'),
         section('KV'),

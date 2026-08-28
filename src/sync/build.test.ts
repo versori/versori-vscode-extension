@@ -54,6 +54,60 @@ describe('buildSyncArgs', () => {
             '--confirm',
         ]);
     });
+
+    it('leaves --version off the argv for the Latest pick', () => {
+        const latest = {
+            projectId: '01PROJECT',
+            directory: '/workspace/shopify-sync',
+            assets: false,
+            dryRun: false,
+        };
+
+        expect(buildSyncArgs(latest)).not.toContain('--version');
+        expect(buildSyncArgs({ ...latest, versionId: '' })).not.toContain('--version');
+        expect(buildSyncArgs({ ...latest, versionId: '   ' })).not.toContain('--version');
+    });
+
+    it('pins a chosen version between the directory and the assets flag', () => {
+        expect(
+            buildSyncArgs({
+                projectId: '01PROJECT',
+                directory: '/workspace/shopify-sync',
+                assets: true,
+                dryRun: false,
+                versionId: '01VERSION',
+            }),
+        ).toEqual([
+            'projects',
+            'sync',
+            '--project',
+            '01PROJECT',
+            '--directory',
+            '/workspace/shopify-sync',
+            '--version',
+            '01VERSION',
+            '--assets',
+            '--confirm',
+        ]);
+    });
+
+    it('never emits --no-pin, because a Sync is a real checkout that must pin', () => {
+        for (const assets of [true, false]) {
+            for (const dryRun of [true, false]) {
+                for (const versionId of [undefined, '', '   ', '01VERSION']) {
+                    expect(
+                        buildSyncArgs({
+                            projectId: '01PROJECT',
+                            directory: '/workspace/shopify-sync',
+                            assets,
+                            dryRun,
+                            versionId,
+                        }),
+                    ).not.toContain('--no-pin');
+                }
+            }
+        }
+    });
 });
 
 describe('parseProjectList', () => {
@@ -286,6 +340,39 @@ describe('buildSyncConfirmationMessage', () => {
         expect(buildSyncConfirmationMessage('Orders sync', '01PROJECT', finalTarget)).toContain(
             '/workspace/orders-sync',
         );
+    });
+
+    it('names the version being checked out when one was picked', () => {
+        expect(
+            buildSyncConfirmationMessage(
+                'Orders sync',
+                '01PROJECT',
+                '/workspace/orders-sync',
+                'v1.2',
+            ),
+        ).toBe(
+            [
+                'THIS WILL DELETE FILES IN THIS FOLDER',
+                '/workspace/orders-sync',
+                '',
+                'Remote project: Orders sync (01PROJECT)',
+                'Version: v1.2',
+                '',
+                'Live sync replaces local project files with the remote project.',
+                'Local-only files can be removed and local edits can be overwritten.',
+            ].join('\n'),
+        );
+    });
+
+    it('leaves the message byte-identical when no version label is given', () => {
+        expect(
+            buildSyncConfirmationMessage('Orders sync', '01PROJECT', '/workspace/orders-sync', ''),
+        ).toBe(
+            buildSyncConfirmationMessage('Orders sync', '01PROJECT', '/workspace/orders-sync'),
+        );
+        expect(
+            buildSyncConfirmationMessage('Orders sync', '01PROJECT', '/workspace/orders-sync'),
+        ).not.toContain('Version:');
     });
 });
 

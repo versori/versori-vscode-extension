@@ -3,9 +3,15 @@ import * as vscode from 'vscode';
 
 import { runJson } from '../cli';
 import { FormDeps, runForm } from '../forms/panel';
-import { readBoolean } from '../forms/build';
+import { readBoolean, readString } from '../forms/build';
 import { POPUP_BACK, PopupSession } from '../forms/popup';
+import { SelectChoice } from '../forms/types';
 import { ResolvedState } from '../resolver/types';
+import {
+    LATEST_VERSION_VALUE,
+    parseVersionList,
+    versionSelectChoices,
+} from '../versions/list';
 import {
     buildSyncConfirmationMessage,
     buildSyncArgs,
@@ -81,6 +87,33 @@ export async function openSyncForm(
             return 'menu';
         }
 
+        // Listed per project rather than once up front: the picker can be
+        // revisited, and a version list only means something for one project.
+        popup.loading('Sync', 'Loading versions…');
+
+        let versionChoices: SelectChoice[];
+        try {
+            const rawVersions = await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Window, title: 'Versori: loading versions' },
+                () =>
+                    runJson<unknown>(deps.bin, {
+                        args: ['projects', 'versions', 'list', '--project', picked.projectId],
+                    }),
+            );
+            versionChoices = versionSelectChoices(parseVersionList(rawVersions));
+        } catch (err) {
+            // A failed list is not an empty list: falling back to Latest-only
+            // would silently hide every snapshot the user came here to pick.
+            popup.close();
+            await vscode.window.showErrorMessage(
+                `Versori: could not list versions — ${err instanceof Error ? err.message : String(err)}`,
+            );
+            continue;
+        }
+        if (!popup.isVisible()) {
+            return 'menu';
+        }
+
         let directory: string | typeof POPUP_BACK | undefined;
         try {
             const fixedDirectory = options.hideCreateSubfolder
@@ -123,6 +156,13 @@ export async function openSyncForm(
                 typed || defaultSubfolderName,
             );
         };
+        const versionLabel = (values: Record<string, string | boolean>): string | undefined => {
+            const versionId = readString(values, 'versionId');
+            if (!versionId) {
+                return undefined;
+            }
+            return versionChoices.find((choice) => choice.value === versionId)?.label ?? versionId;
+        };
 
         return runForm(
             { ...deps, state },
@@ -143,6 +183,7 @@ export async function openSyncForm(
                         picked.label,
                         picked.projectId,
                         targetDirectory(values),
+                        versionLabel(values),
                     ),
                 closeAfterRun: true,
                 commandCwd: null,
@@ -153,6 +194,14 @@ export async function openSyncForm(
                         label: '$(eye) Dry run',
                         value: true,
                         hint: 'Preview creates, updates, and deletes; live sync requires confirmation.',
+                    },
+                    {
+                        kind: 'select' as const,
+                        id: 'versionId',
+                        label: '$(history) Version',
+                        value: LATEST_VERSION_VALUE,
+                        choices: versionChoices,
+                        hint: 'Latest syncs the project’s current files. A snapshot syncs that version’s files instead.',
                     },
                     ...(options.hideCreateSubfolder
                         ? []
@@ -189,9 +238,14 @@ export async function openSyncForm(
                         directory: targetDirectory(values),
                         assets: readBoolean(values, 'assets'),
                         dryRun: readBoolean(values, 'dryRun'),
+                        versionId: readString(values, 'versionId'),
                     }),
-                successMessage: (values) =>
-                    `Synced ${picked.label} into ${targetDirectory(values)}.`,
+                successMessage: (values) => {
+                    const label = versionLabel(values);
+                    return label
+                        ? `Synced ${picked.label} at ${label} into ${targetDirectory(values)}.`
+                        : `Synced ${picked.label} into ${targetDirectory(values)}.`;
+                },
                 onLiveSuccess: deps.onContextChanged,
             },
         );

@@ -1,5 +1,5 @@
 import { interpolate } from './build';
-import { CheckboxField, Field, FormSpec, FormValues } from './types';
+import { CheckboxField, Field, FormSpec, FormValues, SelectChoice, SelectField } from './types';
 
 export type FormScreen =
     | { kind: 'review' }
@@ -78,10 +78,35 @@ export function goBack(state: QuickFormState): QuickFormState | undefined {
     return { ...state, screen: previous, history: state.history.slice(0, -1) };
 }
 
+/**
+ * One list of choices, whichever way the field declared them.
+ *
+ * `options` and `choices` are two spellings of the same thing; every consumer
+ * goes through here so neither the renderer nor the review screen has to know
+ * which one a field used.
+ */
+export function selectChoices(field: SelectField): SelectChoice[] {
+    if (field.choices) {
+        return field.choices;
+    }
+    return (field.options ?? []).map((option) => ({ label: option, value: option }));
+}
+
 export function fieldSummary(field: Field, value: string | boolean | undefined): string {
     if (field.kind === 'checkbox') {
         return value === true ? 'On' : 'Off';
     }
+
+    if (field.kind === 'select') {
+        // A select's value can be an opaque id, and the "no override" choice can
+        // legitimately be the empty string. Show what the user picked, not the
+        // id, and never fall through to "(blank)" for a real choice.
+        const match = selectChoices(field).find((choice) => choice.value === String(value ?? ''));
+        if (match) {
+            return match.label;
+        }
+    }
+
     return String(value ?? '').trim() || '(blank)';
 }
 

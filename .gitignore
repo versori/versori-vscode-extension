@@ -3,3 +3,6 @@ dist/
 *.vsix
 .DS_Store
 CLAUDE.md
+docs/
+.claude/mcp-scratch/
+.superpowers/

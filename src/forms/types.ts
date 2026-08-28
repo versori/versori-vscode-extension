@@ -22,10 +22,26 @@ export interface TextField extends FieldBase {
     required?: RequiredCondition;
 }
 
+/** One row of a select whose stored value differs from its display label. */
+export interface SelectChoice {
+    label: string;
+    description?: string;
+    value: string;
+}
+
 export interface SelectField extends FieldBase {
     kind: 'select';
     value: string;
-    options: string[];
+    /**
+     * Plain options, where the label *is* the value — environment names.
+     * Exactly one of `options` or `choices` is set.
+     */
+    options?: string[];
+    /**
+     * Labeled choices, where the stored value is an opaque id the user should
+     * never have to read — version ids.
+     */
+    choices?: SelectChoice[];
 }
 
 export interface CheckboxField extends FieldBase {

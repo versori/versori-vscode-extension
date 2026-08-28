@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 
+import { envelopeItems, text } from '../cli-json';
 import { ResolvedState } from '../resolver/types';
 
 export interface SyncValues {
@@ -7,6 +8,12 @@ export interface SyncValues {
     directory: string;
     assets: boolean;
     dryRun: boolean;
+    /**
+     * Version id to sync instead of the project's current files. Blank or
+     * omitted keeps `--version` off the argv, which is the CLI's current-files
+     * behaviour.
+     */
+    versionId?: string;
 }
 
 export interface ProjectEntry {
@@ -148,12 +155,14 @@ export function buildSyncConfirmationMessage(
     projectName: string,
     projectId: string,
     directory: string,
+    versionLabel?: string,
 ): string {
     return [
         'THIS WILL DELETE FILES IN THIS FOLDER',
         directory,
         '',
         `Remote project: ${projectName} (${projectId})`,
+        ...(versionLabel ? [`Version: ${versionLabel}`] : []),
         '',
         'Live sync replaces local project files with the remote project.',
         'Local-only files can be removed and local edits can be overwritten.',
@@ -186,7 +195,9 @@ export function syncState(
  * Build the argv for `projects sync`.
  *
  * The CLI's safe default is a dry run. `--confirm` is appended only after the
- * form's dry-run checkbox has been explicitly unticked.
+ * form's dry-run checkbox has been explicitly unticked. `--no-pin` is never
+ * emitted here: a Sync from the form is a real working-tree checkout and must
+ * pin. Compare Version builds its own argv.
  */
 export function buildSyncArgs(values: SyncValues): string[] {
     const projectId = values.projectId.trim();
@@ -198,6 +209,10 @@ export function buildSyncArgs(values: SyncValues): string[] {
 
     const args = ['projects', 'sync', '--project', projectId, '--directory', directory];
 
+    const versionId = values.versionId?.trim();
+    if (versionId) {
+        args.push('--version', versionId);
+    }
     if (values.assets) {
         args.push('--assets');
     }
@@ -210,7 +225,7 @@ export function buildSyncArgs(values: SyncValues): string[] {
 
 /** Parse the `{ projects: [...] }` response emitted by `projects list -o json`. */
 export function parseProjectList(raw: unknown): ProjectEntry[] {
-    const entries = projectEntries(raw);
+    const entries = envelopeItems(raw, ['projects', 'items', 'results']);
 
     return entries
         .map((entry) => {
@@ -253,25 +268,4 @@ export function projectPickItems(
                     : project.id,
             projectId: project.id,
         }));
-}
-
-function projectEntries(raw: unknown): unknown[] {
-    if (Array.isArray(raw)) {
-        return raw;
-    }
-    if (!raw || typeof raw !== 'object') {
-        return [];
-    }
-
-    const record = raw as Record<string, unknown>;
-    for (const key of ['projects', 'items', 'results']) {
-        if (Array.isArray(record[key])) {
-            return record[key] as unknown[];
-        }
-    }
-    return [];
-}
-
-function text(value: unknown): string {
-    return typeof value === 'string' ? value.trim() : '';
 }
