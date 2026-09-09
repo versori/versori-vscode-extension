@@ -65,6 +65,15 @@ describe('listProjectFiles', () => {
         expect(listed()).toEqual(['README.md']);
     });
 
+    it('excludes root versori-compare-* checkouts so they are not diffs against themselves', () => {
+        write('versori-compare-v1.2/src/index.ts');
+        write('versori-compare-v1.2/README.md');
+        write('src/index.ts');
+        write('README.md');
+
+        expect(listed()).toEqual(['README.md', 'src/index.ts']);
+    });
+
     it('honours the root .gitignore while still listing the .gitignore itself', () => {
         write('.gitignore', 'node_modules/\n*.log\nbuild/\n');
         write('node_modules/x.js');
