@@ -70,6 +70,11 @@ interface WebviewMessage {
     controls?: ControlValues;
     direction?: string;
     key?: string;
+    value?: string;
+    expiresAt?: string;
+    member?: string;
+    memberValue?: string;
+    includesDraft?: boolean;
 }
 
 /** Single panel, so a second invocation refreshes rather than duplicating. */
@@ -158,8 +163,32 @@ export async function showKvPanel(deps: KvDeps, environments: string[]): Promise
             return;
         }
 
-        if (message?.type === 'edit') {
-            void editEntry(entry, String(message.key ?? ''));
+        if (message?.type === 'deleteMember') {
+            const member = String(message.member ?? '');
+            const memberValue = truncate(String(message.memberValue ?? ''), 200);
+            void saveEntry(
+                entry,
+                String(message.key ?? ''),
+                typeof message.value === 'string' ? message.value : '',
+                String(message.expiresAt ?? ''),
+                {
+                    message: `Are you sure you want to delete "${member}: ${memberValue}" from KV entry '${String(message.key ?? '').trim()}'?`,
+                    detail: message.includesDraft
+                        ? 'Your other unsaved changes to this entry are saved with it.'
+                        : undefined,
+                    button: 'Delete',
+                },
+            );
+            return;
+        }
+
+        if (message?.type === 'save') {
+            void saveEntry(
+                entry,
+                String(message.key ?? ''),
+                typeof message.value === 'string' ? message.value : '',
+                String(message.expiresAt ?? ''),
+            );
             return;
         }
 
@@ -289,7 +318,19 @@ async function setEntry(entry: OpenPanel): Promise<void> {
     await writeEntry(entry, key.trim(), 'Set KV entry');
 }
 
-async function editEntry(entry: OpenPanel, key: string): Promise<void> {
+/**
+ * Save an edit made inline in the webview (whole value, or one key/value of an
+ * object). The webview sends JSON text; it is re-validated here because the host
+ * is the one that mutates. The entry's remaining TTL is carried over, since
+ * `kv set` without `--expire-in` would otherwise make a temporary entry permanent.
+ */
+async function saveEntry(
+    entry: OpenPanel,
+    key: string,
+    valueJson: string,
+    expiresAt: string,
+    confirm?: { message: string; detail?: string; button: string },
+): Promise<void> {
     const keyError = validateKvKey(key);
     if (keyError) {
         void vscode.window.showWarningMessage(`Versori: ${keyError}`);
@@ -306,7 +347,52 @@ async function editEntry(entry: OpenPanel, key: string): Promise<void> {
         return;
     }
 
-    await writeEntry(entry, key.trim(), `Edit KV entry ${key.trim()}`);
+    try {
+        JSON.parse(valueJson);
+    } catch (err) {
+        void vscode.window.showErrorMessage(`Versori: value is not valid JSON — ${errorText(err)}`);
+        return;
+    }
+
+    const remaining = expiresAt ? Date.parse(expiresAt) - Date.now() : Number.NaN;
+    const expireInMs = Number.isFinite(remaining) && remaining > 0 ? remaining : undefined;
+
+    const button = confirm?.button ?? 'Save';
+    const confirmed = await vscode.window.showWarningMessage(
+        confirm?.message ?? `Save changes to key "${key.trim()}" in ${describeTarget(entry.values)}?`,
+        {
+            modal: true,
+            detail: [
+                confirm?.detail,
+                `This overwrites the stored value in ${describeTarget(entry.values)}.`,
+                expireInMs === undefined ? '' : 'The remaining TTL is kept.',
+            ]
+                .filter(Boolean)
+                .join(' '),
+        },
+        button,
+    );
+    if (confirmed !== button) {
+        return;
+    }
+
+    let flags: string[];
+    try {
+        flags = buildKvSetArgs(entry.values, {
+            key,
+            value: valueJson,
+            expireInMs,
+            ifNotExists: false,
+        });
+    } catch (err) {
+        void vscode.window.showErrorMessage(`Versori: ${errorText(err)}`);
+        return;
+    }
+
+    await mutate(entry, 'saving KV entry', ['kv', 'set', ...projectArgs(entry.deps.state), ...flags], {
+        success: `Saved "${key.trim()}".`,
+        logLine: `kv set --key ${key.trim()} --yes (value omitted)`,
+    });
 }
 
 async function writeEntry(entry: OpenPanel, key: string, title: string): Promise<void> {
@@ -704,6 +790,10 @@ function ensureRelativeKeyMode(entry: OpenPanel): boolean {
         'Switch Keys to “Scope prefix stripped” before editing or deleting an entry.',
     );
     return false;
+}
+
+function truncate(text: string, max: number): string {
+    return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
 function errorText(err: unknown): string {

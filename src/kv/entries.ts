@@ -5,12 +5,16 @@ export interface KvEntry {
     key: string;
     /** The stored value, stringified faithfully. Only ever shown expanded. */
     value: string;
+    /** The stored value as JSON text (strings quoted), for the editor. */
+    valueJson: string;
     /** Local-time createdAt for the collapsed row. */
     createdAt: string;
     /** Exactly as the CLI emitted it, for the expanded detail. */
     rawCreatedAt: string;
     /** Local-time expiresAt — the TTL. Empty when the entry never expires. */
     expiresAt: string;
+    /** expiresAt exactly as emitted, so an edit can keep the remaining TTL. */
+    rawExpiresAt: string;
     versionstamp: string;
     /** Key + value, original case, for substring matching in the panel. */
     searchText: string;
@@ -75,9 +79,11 @@ function toEntry(row: Row): KvEntry {
     return {
         key,
         value,
+        valueJson: JSON.stringify(row.value ?? null, null, 2),
         createdAt: rawCreatedAt ? formatCell(rawCreatedAt) : '',
         rawCreatedAt,
         expiresAt: rawExpiresAt ? formatCell(rawExpiresAt) : '',
+        rawExpiresAt,
         versionstamp: typeof row.versionstamp === 'string' ? row.versionstamp : '',
         searchText: `${key} ${value}`,
     };

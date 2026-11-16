@@ -70,6 +70,48 @@ const KV_CSS = `
   .paging { display: flex; gap: 8px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
   .row-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
   .row-actions button { font-size: 0.88em; padding: 3px 10px; }
+  .member .trash {
+    margin-left: auto;
+    flex: none;
+    font-size: 0.85em;
+    padding: 1px 6px;
+    color: var(--vscode-errorForeground, #e03131);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    cursor: pointer;
+    opacity: 0.7;
+  }
+  .member .trash:hover { opacity: 1; border-color: var(--vscode-errorForeground, #e03131); }
+  .member { display: flex; gap: 4px; align-items: baseline; padding: 1px 0 1px 16px; }
+  .mkey, .mval {
+    cursor: text;
+    border-radius: 2px;
+    padding: 0 3px;
+    white-space: pre-wrap;
+  }
+  .mkey { font-weight: 600; flex: none; }
+  .mkey:hover, .mval:hover { background: var(--vscode-list-hoverBackground); outline: 1px dashed var(--vscode-focusBorder); }
+  .inline-input, .json-box {
+    box-sizing: border-box;
+    font: inherit;
+    color: var(--vscode-input-foreground);
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 2px;
+    padding: 3px 6px;
+  }
+  .inline-input:focus, .json-box:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .json-box { width: 100%; resize: vertical; min-height: 4.5em; }
+  .member .json-box { flex: 1; width: auto; min-height: 0; }
+  .add-row { display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; flex-wrap: wrap; }
+  .val-error { color: var(--vscode-errorForeground, #e03131); font-size: 0.88em; margin-top: 4px; }
+  .draft-bar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin-top: 8px; padding: 4px 8px; border-radius: 4px;
+    background: rgba(128,128,128,0.15);
+  }
+  .draft-bar .msg { flex: 1; }
   button:disabled { opacity: 0.45; cursor: default; }
   button:disabled:hover { background: var(--vscode-button-secondaryBackground); }
 `;
@@ -95,7 +137,8 @@ const KV_BODY = `
     The filter box searches <strong>only the entries loaded on this page</strong> —
     <code>kv list</code> has no server-side search. Narrow with <strong>Key prefix</strong>,
     or walk the store with <strong>Next</strong>. Entries come back newest first by internal
-    id, not by key. Values stay collapsed until you expand a row. Set / Edit / Delete / Wipe
+    id, not by key. Values stay collapsed until you expand a row. Edit shows the value as raw JSON;
+    click a key or value of an object to change just that part. Set / Edit / Delete / Wipe
     ask the host to confirm before calling the CLI.
   </p>
 
@@ -183,6 +226,341 @@ export const KV_SCRIPT = `
     return button;
   }
 
+  function parseJson(text) {
+    if (typeof text !== 'string') { return { ok: false, error: 'no JSON available' }; }
+    try { return { ok: true, value: JSON.parse(text) }; }
+    catch (err) { return { ok: false, error: String(err && err.message ? err.message : err) }; }
+  }
+
+  function isPlainObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+  function pretty(v) { return JSON.stringify(v, null, 2); }
+
+  function mk(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) { node.className = className; }
+    if (text !== undefined) { node.textContent = text; }
+    return node;
+  }
+
+  function plainButton(label, onClick) {
+    const button = mk('button', '', label);
+    button.type = 'button';
+    button.addEventListener('click', onClick);
+    return button;
+  }
+
+  // defineProperty, not assignment: a stored key called "__proto__" must stay a
+  // plain own key instead of rewriting the object's prototype.
+  function setOwn(obj, key, value) {
+    Object.defineProperty(obj, key, { value: value, enumerable: true, writable: true, configurable: true });
+  }
+
+  function hasOwn(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); }
+
+  function textRows(text) { return Math.min(10, Math.max(2, text.split('\\n').length)); }
+
+  /**
+   * Value editor for one entry. Everything here is local until Save: edits stage
+   * a draft, and only Save posts, so the host's confirm modal is one decision for
+   * the whole change and a cancelled modal loses nothing.
+   */
+  function buildDetail(entry, detail) {
+    const parsed = parseJson(entry.valueJson);
+    const base = parsed.ok ? parsed.value : undefined;
+    const objectValue = parsed.ok && isPlainObject(base);
+    const st = { mode: 'view', draft: null, editing: null, adding: null, rawText: null, error: '' };
+    const current = () => (st.draft || base);
+
+    const list = document.createElement('dl');
+    const dt = mk('dt', '', 'value');
+    const valueHost = mk('dd', 'val');
+    list.appendChild(dt);
+    list.appendChild(valueHost);
+    addField(list, 'expires', entry.expiresAt || 'never');
+    addField(list, 'created', entry.rawCreatedAt);
+    addField(list, 'versionstamp', entry.versionstamp);
+    detail.appendChild(list);
+
+    let focusNode = null;
+
+    function save(text, expiresAt) {
+      vscode.postMessage({
+        type: 'save',
+        key: entry.key,
+        value: text,
+        expiresAt: expiresAt !== undefined ? expiresAt : (entry.rawExpiresAt || ''),
+      });
+    }
+
+    function stage(next) {
+      st.draft = next;
+      st.editing = null;
+      st.adding = null;
+      st.error = '';
+      renderValue();
+    }
+
+    function copyWith(replaceKey, newKey, newValue) {
+      const out = {};
+      for (const k of Object.keys(current())) {
+        if (k === replaceKey) { setOwn(out, newKey, newValue); }
+        else { setOwn(out, k, current()[k]); }
+      }
+      return out;
+    }
+
+    function keyInput(k) {
+      const input = mk('input', 'inline-input');
+      input.type = 'text';
+      input.value = k;
+      focusNode = input;
+      let done = false;
+      const finish = (commit) => {
+        if (done) { return; }
+        done = true;
+        if (!commit || input.value === k) {
+          st.editing = null; st.error = ''; renderValue(); return;
+        }
+        const next = input.value;
+        if (next === '') { st.error = 'A key cannot be empty.'; renderValue(); return; }
+        if (hasOwn(current(), next)) { st.error = 'Key "' + next + '" already exists.'; renderValue(); return; }
+        stage(copyWith(k, next, current()[k]));
+      };
+      input.addEventListener('keydown', (e) => {
+        if (e && e.key === 'Enter') { finish(true); }
+        else if (e && e.key === 'Escape') { finish(false); }
+      });
+      input.addEventListener('blur', () => finish(true));
+      return input;
+    }
+
+    function valueInput(k) {
+      const text = st.editing.text !== undefined ? st.editing.text : pretty(current()[k]);
+      const input = mk('textarea', 'json-box');
+      input.value = text;
+      input.rows = textRows(text);
+      focusNode = input;
+      let done = false;
+      const finish = (commit) => {
+        if (done) { return; }
+        done = true;
+        if (!commit) { st.editing = null; st.error = ''; renderValue(); return; }
+        const result = parseJson(input.value);
+        if (!result.ok) {
+          st.editing = { key: k, part: 'value', text: input.value };
+          st.error = 'Value must be valid JSON (strings need quotes): ' + result.error;
+          renderValue();
+          return;
+        }
+        if (pretty(result.value) === pretty(current()[k])) {
+          st.editing = null; st.error = ''; renderValue(); return;
+        }
+        stage(copyWith(k, k, result.value));
+      };
+      input.addEventListener('keydown', (e) => {
+        if (e && e.key === 'Escape') { finish(false); }
+        else if (e && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { finish(true); }
+      });
+      input.addEventListener('blur', () => finish(true));
+      return input;
+    }
+
+    function renderAdd() {
+      const row = mk('div', 'add-row');
+      const keyBox = mk('input', 'inline-input');
+      keyBox.type = 'text';
+      keyBox.placeholder = 'key';
+      keyBox.value = st.adding.key;
+      keyBox.addEventListener('input', () => { st.adding.key = keyBox.value; });
+      const valBox = mk('input', 'inline-input');
+      valBox.type = 'text';
+      valBox.placeholder = 'value (JSON, e.g. "text", 1, true, {})';
+      valBox.value = st.adding.text;
+      valBox.addEventListener('input', () => { st.adding.text = valBox.value; });
+      focusNode = keyBox;
+      row.appendChild(keyBox);
+      row.appendChild(valBox);
+      row.appendChild(plainButton('Add', () => {
+        const key = st.adding.key;
+        if (key === '') { st.error = 'A key cannot be empty.'; renderValue(); return; }
+        if (hasOwn(current(), key)) { st.error = 'Key "' + key + '" already exists.'; renderValue(); return; }
+        const result = parseJson(st.adding.text);
+        if (!result.ok) {
+          st.error = 'Value must be valid JSON (strings need quotes): ' + result.error;
+          renderValue();
+          return;
+        }
+        const next = {};
+        for (const k of Object.keys(current())) { setOwn(next, k, current()[k]); }
+        setOwn(next, key, result.value);
+        stage(next);
+      }));
+      row.appendChild(plainButton('Cancel', () => { st.adding = null; st.error = ''; renderValue(); }));
+      valueHost.appendChild(row);
+    }
+
+    // The host asks "are you sure" (a webview cannot show a modal), then saves the
+    // object without that member. Anything already staged is saved with it.
+    function removeMember(k) {
+      const next = {};
+      for (const other of Object.keys(current())) {
+        if (other !== k) { setOwn(next, other, current()[other]); }
+      }
+      vscode.postMessage({
+        type: 'deleteMember',
+        key: entry.key,
+        member: k,
+        memberValue: JSON.stringify(current()[k]),
+        value: JSON.stringify(next),
+        expiresAt: entry.rawExpiresAt || '',
+        includesDraft: Boolean(st.draft),
+      });
+    }
+
+    function renderMembers() {
+      const obj = current();
+      const keys = Object.keys(obj);
+      if (keys.length === 0) {
+        valueHost.appendChild(mk('div', '', '{}'));
+      } else {
+        valueHost.appendChild(mk('div', '', '{'));
+      }
+      keys.forEach((k, index) => {
+        const row = mk('div', 'member');
+        const editingHere = st.editing && st.editing.key === k;
+        if (editingHere && st.editing.part === 'key') {
+          row.appendChild(keyInput(k));
+        } else {
+          const label = mk('span', 'mkey', k);
+          label.title = 'Click to rename this key';
+          label.addEventListener('click', () => { st.editing = { key: k, part: 'key' }; st.error = ''; renderValue(); });
+          row.appendChild(label);
+        }
+        row.appendChild(mk('span', '', ':'));
+        if (editingHere && st.editing.part === 'value') {
+          row.appendChild(valueInput(k));
+        } else {
+          const val = mk('span', 'mval', pretty(obj[k]));
+          val.title = 'Click to edit this value as JSON';
+          val.addEventListener('click', () => { st.editing = { key: k, part: 'value' }; st.error = ''; renderValue(); });
+          row.appendChild(val);
+        }
+        // Trailing commas so the view still reads as the JSON it is.
+        if (index < keys.length - 1) { row.appendChild(mk('span', '', ',')); }
+        const trash = mk('button', 'trash', '\uD83D\uDDD1');
+        trash.type = 'button';
+        trash.title = 'Delete "' + k + '" from this entry';
+        trash.setAttribute('aria-label', 'Delete ' + k);
+        trash.addEventListener('click', () => removeMember(k));
+        row.appendChild(trash);
+        valueHost.appendChild(row);
+      });
+      if (keys.length > 0) { valueHost.appendChild(mk('div', '', '}')); }
+      if (st.adding) { renderAdd(); }
+    }
+
+    // The whole entry as one document. Only value and expiresAt are writable
+    // (kv set can change nothing else); the rest is shown for context and
+    // checked unchanged, so a typo in a read-only field cannot be silently dropped.
+    function fullEntry() {
+      return {
+        key: entry.key,
+        value: parsed.ok ? current() : entry.value,
+        createdAt: entry.rawCreatedAt,
+        expiresAt: entry.rawExpiresAt || null,
+        versionstamp: entry.versionstamp,
+      };
+    }
+
+    function checkEntryJson(text) {
+      const result = parseJson(text);
+      if (!result.ok) { return { ok: false, error: 'Not valid JSON: ' + result.error }; }
+      const doc = result.value;
+      if (!isPlainObject(doc)) { return { ok: false, error: 'Must be a JSON object with a "value" field.' }; }
+      if (!hasOwn(doc, 'value')) { return { ok: false, error: 'Missing "value".' }; }
+      const original = fullEntry();
+      for (const field of ['key', 'createdAt', 'versionstamp']) {
+        if (doc[field] !== original[field]) {
+          return { ok: false, error: '"' + field + '" is read-only here — change "value" or "expiresAt".' };
+        }
+      }
+      const expires = doc.expiresAt === undefined ? null : doc.expiresAt;
+      if (expires !== null && (typeof expires !== 'string' || !Number.isFinite(Date.parse(expires)))) {
+        return { ok: false, error: '"expiresAt" must be null or an ISO date string.' };
+      }
+      return { ok: true, value: doc.value, expiresAt: expires };
+    }
+
+    function renderRaw() {
+      const area = mk('textarea', 'json-box');
+      area.value = st.rawText !== null ? st.rawText : pretty(fullEntry());
+      area.rows = textRows(area.value);
+      focusNode = area;
+      valueHost.appendChild(area);
+      const problem = mk('div', 'val-error');
+      const saveBtn = plainButton('Save', () => {
+        const checked = checkEntryJson(area.value);
+        if (checked.ok) { save(JSON.stringify(checked.value), checked.expiresAt || ''); }
+      });
+      const check = () => {
+        st.rawText = area.value;
+        const checked = checkEntryJson(area.value);
+        problem.textContent = checked.ok ? '' : checked.error;
+        saveBtn.disabled = !checked.ok;
+      };
+      area.addEventListener('input', check);
+      check();
+      valueHost.appendChild(problem);
+      const bar = mk('div', 'row-actions');
+      bar.appendChild(saveBtn);
+      bar.appendChild(plainButton('Cancel', () => { st.mode = 'view'; st.rawText = null; renderValue(); }));
+      valueHost.appendChild(bar);
+    }
+
+    function renderValue() {
+      focusNode = null;
+      valueHost.textContent = '';
+      if (st.mode === 'raw') {
+        renderRaw();
+      } else if (!objectValue) {
+        // Strings, numbers, arrays and anything unparsable stay read-only here;
+        // Edit opens the whole value as JSON.
+        valueHost.textContent = entry.value;
+      } else {
+        renderMembers();
+      }
+      if (st.error && st.mode !== 'raw') { valueHost.appendChild(mk('div', 'val-error', st.error)); }
+      if (st.draft && st.mode !== 'raw') {
+        const bar = mk('div', 'draft-bar');
+        bar.appendChild(mk('span', 'msg', 'Unsaved changes'));
+        bar.appendChild(plainButton('Save changes', () => save(JSON.stringify(st.draft))));
+        bar.appendChild(plainButton('Discard', () => { st.draft = null; st.error = ''; renderValue(); }));
+        valueHost.appendChild(bar);
+      }
+      if (focusNode && focusNode.focus) { focusNode.focus(); }
+    }
+
+    const actions = mk('div', 'row-actions');
+    actions.appendChild(plainButton('Edit', () => {
+      st.mode = 'raw'; st.rawText = null; st.editing = null; st.adding = null; st.error = '';
+      renderValue();
+    }));
+    const add = plainButton('Add key/value', () => {
+      st.mode = 'view'; st.editing = null; st.error = '';
+      st.adding = { key: '', text: '""' };
+      renderValue();
+    });
+    if (!objectValue) {
+      add.disabled = true;
+      add.title = 'Only available when the value is a JSON object';
+    }
+    actions.appendChild(add);
+    actions.appendChild(actionButton('Delete', 'delete', entry.key));
+    detail.appendChild(actions);
+
+    renderValue();
+  }
+
   function renderEntries() {
     const body = el('body');
     body.textContent = '';
@@ -252,19 +630,7 @@ export const KV_SCRIPT = `
 
       const detail = document.createElement('div');
       detail.className = 'detail';
-      const list = document.createElement('dl');
-      addField(list, 'value', entry.value, 'val');
-      // The TTL: when this entry disappears on its own.
-      addField(list, 'expires', entry.expiresAt || 'never');
-      addField(list, 'created', entry.rawCreatedAt);
-      addField(list, 'versionstamp', entry.versionstamp);
-      detail.appendChild(list);
-
-      const actions = document.createElement('div');
-      actions.className = 'row-actions';
-      actions.appendChild(actionButton('Edit', 'edit', entry.key));
-      actions.appendChild(actionButton('Delete', 'delete', entry.key));
-      detail.appendChild(actions);
+      buildDetail(entry, detail);
 
       row.appendChild(detail);
 
