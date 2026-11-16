@@ -123,14 +123,18 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
         { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] },
     );
 
+    const initialValues = normaliseLogValues(defaultValues(controls));
+    // Live logs start ticked. A default that cannot run (custom range) starts
+    // off with the usual reason instead of a checkbox that does nothing.
+    const initialLiveReason = liveUnavailableReason(initialValues);
     const entry: OpenPanel = {
         panel,
-        values: normaliseLogValues(defaultValues(controls)),
+        values: initialValues,
         entries: [],
         deps,
         controls,
-        live: { enabled: false, visible: true, inFlight: false },
-        liveStatus: { enabled: false },
+        live: { enabled: !initialLiveReason, visible: true, inFlight: false },
+        liveStatus: { enabled: !initialLiveReason, disabledReason: initialLiveReason },
         requests: new RequestGate(),
         rawJson: '',
     };
@@ -213,6 +217,8 @@ export async function showLogPanel(deps: LogsDeps, environments: string[]): Prom
     );
 
     await load(entry);
+    // After the first load, which sets the poll baseline the timer reads.
+    syncTimer(entry);
 }
 
 function defaultValues(controls: Control[]): ControlValues {
