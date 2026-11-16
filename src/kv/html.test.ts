@@ -29,6 +29,7 @@ interface StubNode {
         contains(name: string): boolean;
     };
     appendChild(child: StubNode): void;
+    setAttribute(name: string, value: string): void;
     querySelector(selector: string): StubNode | undefined;
     addEventListener(name: string, fn: () => void): void;
     fire(name: string): void;
@@ -45,9 +46,11 @@ interface TestPayload {
     entries: Array<{
         key: string;
         value: string;
+        valueJson?: string;
         createdAt: string;
         rawCreatedAt: string;
         expiresAt: string;
+        rawExpiresAt?: string;
         versionstamp: string;
         searchText: string;
     }>;
@@ -129,6 +132,7 @@ function makeNode(tag: string, all: StubNode[]): StubNode {
         appendChild(child) {
             self.children.push(child);
         },
+        setAttribute() {},
         querySelector(selector) {
             // Recursive and class-or-tag, matching the real DOM: the script looks
             // up `.twist` from the row it lives two levels below, and the detail
@@ -679,7 +683,8 @@ describe('renderKvHtml', () => {
         expect(html).toContain('id="wipeprefix"');
         expect(html).toContain("type: 'set'");
         expect(html).toContain("type: 'wipe'");
-        expect(html).toContain("actionbutton('edit', 'edit'");
+        expect(html).toContain("type: 'save'");
+        expect(html).toContain("'add key/value'");
         expect(html).toContain("actionbutton('delete', 'delete'");
     });
 
@@ -703,9 +708,197 @@ describe('renderKvHtml', () => {
         const del = buttons.find((node) => node.textContent === 'Delete');
         expect(edit).toBeTruthy();
         expect(del).toBeTruthy();
+        const before = view.posted.length;
         edit!.fire('click');
-        expect(view.posted.at(-1)).toMatchObject({ type: 'edit', key: 'orders/cursor' });
+        // Edit is now in-place: it opens the raw JSON box and posts nothing.
+        expect(view.posted.length).toBe(before);
         del!.fire('click');
         expect(view.posted.at(-1)).toMatchObject({ type: 'delete', key: 'orders/cursor' });
+    });
+});
+
+describe('inline JSON editing', () => {
+    const OBJECT_ENTRY = {
+        key: 'orders/cursor',
+        value: '{"since":"2026-08-01","n":1}',
+        valueJson: '{\n  "since": "2026-08-01",\n  "n": 1\n}',
+        createdAt: '2026-08-05 10:00:00',
+        rawCreatedAt: '2026-08-05T10:00:00Z',
+        expiresAt: '2026-08-12 09:15:00',
+        rawExpiresAt: '2026-08-12T09:15:00Z',
+        versionstamp: '2',
+        searchText: 'orders/cursor',
+    };
+
+    function open() {
+        const view = harness();
+        view.send(payload({ entries: [OBJECT_ENTRY] }));
+        const entry = () => view.node('body').children[0];
+        const find = (pred: (n: StubNode) => boolean) => descendants(entry(), []).find(pred);
+        const button = (label: string) =>
+            find((n) => n.tag === 'button' && n.textContent === label);
+        return { view, entry, find, button };
+    }
+
+    it('Edit shows every field of the entry as one JSON document and posts value + expiry', () => {
+        const { view, find, button } = open();
+        button('Edit')!.fire('click');
+
+        const area = find((n) => n.tag === 'textarea')!;
+        expect(JSON.parse(area.value)).toEqual({
+            key: 'orders/cursor',
+            value: { since: '2026-08-01', n: 1 },
+            createdAt: '2026-08-05T10:00:00Z',
+            expiresAt: '2026-08-12T09:15:00Z',
+            versionstamp: '2',
+        });
+
+        area.value = '{"key":"orders/cursor","value":';
+        area.fire('input');
+        expect(button('Save')!.disabled).toBe(true);
+        expect(find((n) => n.className.includes('val-error'))!.textContent).toMatch(/not valid json/i);
+
+        const doc = JSON.parse(OBJECT_ENTRY.valueJson);
+        doc.since = 5;
+        area.value = JSON.stringify({
+            key: 'orders/cursor',
+            value: doc,
+            createdAt: '2026-08-05T10:00:00Z',
+            expiresAt: null,
+            versionstamp: '2',
+        });
+        area.fire('input');
+        expect(button('Save')!.disabled).toBe(false);
+        button('Save')!.fire('click');
+
+        expect(view.posted.at(-1)).toEqual({
+            type: 'save',
+            key: 'orders/cursor',
+            value: JSON.stringify(doc),
+            expiresAt: '',
+        });
+    });
+
+    it('refuses edits to read-only fields in the whole-entry JSON', () => {
+        const { find, button } = open();
+        button('Edit')!.fire('click');
+        const area = find((n) => n.tag === 'textarea')!;
+        const doc = JSON.parse(area.value);
+        doc.key = 'other';
+        area.value = JSON.stringify(doc);
+        area.fire('input');
+
+        expect(button('Save')!.disabled).toBe(true);
+        expect(find((n) => n.className.includes('val-error'))!.textContent).toMatch(/"key" is read-only/);
+    });
+
+    it('shows commas between members of an object value', () => {
+        const { entry } = open();
+        const text = descendants(entry(), [])
+            .filter((n) => n.className.includes('member'))
+            .map((row) =>
+                descendants(row, [])
+                    .filter((n) => !n.className.includes('trash'))
+                    .map((n) => n.textContent)
+                    .join(''),
+            );
+        expect(text[0].endsWith(',')).toBe(true);
+        expect(text[1].endsWith(',')).toBe(false);
+    });
+
+    it('clicking a value edits just that value and stages it until Save changes', () => {
+        const { view, find, button } = open();
+        const countBefore = view.posted.length;
+
+        find((n) => n.className.includes('mval') && n.textContent === '1')!.fire('click');
+        const box = find((n) => n.tag === 'textarea')!;
+        box.value = '2';
+        box.fire('blur');
+
+        expect(view.posted.length).toBe(countBefore);
+        expect(find((n) => n.textContent === 'Unsaved changes')).toBeTruthy();
+        button('Save changes')!.fire('click');
+
+        const sent = view.posted.at(-1) as { value: string };
+        expect(JSON.parse(sent.value)).toEqual({ since: '2026-08-01', n: 2 });
+    });
+
+    it('rejects an invalid value rather than staging it', () => {
+        const { find } = open();
+        find((n) => n.className.includes('mval') && n.textContent === '1')!.fire('click');
+        const box = find((n) => n.tag === 'textarea')!;
+        box.value = 'abc';
+        box.fire('blur');
+
+        expect(find((n) => n.className.includes('val-error'))!.textContent).toMatch(/valid JSON/);
+        expect(find((n) => n.textContent === 'Unsaved changes')).toBeUndefined();
+    });
+
+    it('renames a key in place, keeping order, and refuses duplicates', () => {
+        const { view, find, button } = open();
+
+        find((n) => n.className.includes('mkey') && n.textContent === 'n')!.fire('click');
+        let input = find((n) => n.tag === 'input')!;
+        input.value = 'since';
+        input.fire('blur');
+        expect(find((n) => n.className.includes('val-error'))!.textContent).toMatch(/already exists/);
+
+        input = find((n) => n.tag === 'input')!;
+        input.value = 'count';
+        input.fire('blur');
+        button('Save changes')!.fire('click');
+
+        const sent = view.posted.at(-1) as { value: string };
+        expect(Object.keys(JSON.parse(sent.value))).toEqual(['since', 'count']);
+    });
+
+    it('adds a key/value pair next to Edit', () => {
+        const { view, find, button } = open();
+        button('Add key/value')!.fire('click');
+
+        const [keyBox, valBox] = descendants(find((n) => n.className.includes('add-row'))!, []).filter(
+            (n) => n.tag === 'input',
+        );
+        keyBox.value = 'flag';
+        keyBox.fire('input');
+        valBox.value = 'true';
+        valBox.fire('input');
+        button('Add')!.fire('click');
+        button('Save changes')!.fire('click');
+
+        const sent = view.posted.at(-1) as { value: string };
+        expect(JSON.parse(sent.value)).toEqual({ since: '2026-08-01', n: 1, flag: true });
+    });
+
+    it('disables Add key/value when the value is not a JSON object', () => {
+        const view = harness();
+        view.send(
+            payload({ entries: [{ ...OBJECT_ENTRY, value: 'plain', valueJson: '"plain"' }] }),
+        );
+        const add = descendants(view.node('body').children[0], []).find(
+            (n) => n.tag === 'button' && n.textContent === 'Add key/value',
+        );
+        expect(add!.disabled).toBe(true);
+    });
+
+    it('puts a trash button on each member that asks the host to confirm the delete', () => {
+        const { view, find } = open();
+        const trashes = descendants(view.node('body').children[0], []).filter((n) =>
+            n.className.includes('trash'),
+        );
+        expect(trashes).toHaveLength(2);
+
+        trashes[1].fire('click');
+        const sent = view.posted.at(-1) as Record<string, unknown>;
+        expect(sent).toMatchObject({
+            type: 'deleteMember',
+            key: 'orders/cursor',
+            member: 'n',
+            memberValue: '1',
+            expiresAt: '2026-08-12T09:15:00Z',
+            includesDraft: false,
+        });
+        expect(JSON.parse(sent.value as string)).toEqual({ since: '2026-08-01' });
+        expect(find((n) => n.textContent === 'Unsaved changes')).toBeUndefined();
     });
 });

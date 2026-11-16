@@ -30,6 +30,7 @@ interface StubNode {
         contains(name: string): boolean;
     };
     appendChild(child: StubNode): void;
+    setAttribute(name: string, value: string): void;
     addEventListener(name: string, fn: (...args: unknown[]) => void): void;
     fire(name: string, event?: unknown): void;
 }
@@ -105,6 +106,7 @@ function makeNode(tag: string, all: StubNode[]): StubNode {
             self.children.push(child);
             all.push(child);
         },
+        setAttribute() {},
         addEventListener(name: string, fn: (...args: unknown[]) => void) {
             (listeners[name] ??= []).push(fn);
         },
@@ -129,6 +131,10 @@ function findByText(nodes: StubNode[], text: string): StubNode | undefined {
 
 function walk(node: StubNode): StubNode[] {
     return [node, ...node.children.flatMap(walk)];
+}
+
+function valueInput(root: StubNode, key: string): StubNode | undefined {
+    return walk(root).find((node) => node.tag === 'input' && node.dataset.key === key);
 }
 
 function findLiveInput(root: StubNode, type: string): StubNode | undefined {
@@ -246,17 +252,17 @@ describe('renderResourcesHtml', () => {
 });
 
 describe('RESOURCES_SCRIPT', () => {
-    it('renders slider bounds and keeps out-of-range values as text', () => {
+    it('renders value boxes with bounds and keeps out-of-range values as text', () => {
         const { nodes, byId } = mount(payload());
 
         expect(byId.heading.textContent).toBe('Environment Config');
         expect(collectText(byId.subtitle)).toContain('production');
 
-        const ranges = nodes.filter((node) => node.tag === 'input' && node.type === 'range');
-        expect(ranges.length).toBeGreaterThanOrEqual(3);
-        expect(ranges.some((node) => node.value === '170')).toBe(true);
+        expect(nodes.some((node) => node.tag === 'input' && node.type === 'range')).toBe(false);
+        expect(valueInput(byId.resources, 'cpu')?.value).toBe('170');
+        expect(findByText(nodes, 'Min 50m · Max 500m · Live 170m')).toBeTruthy();
 
-        expect(findByText(nodes, 'outside the slider range')).toBeTruthy();
+        expect(findByText(nodes, 'outside the allowed range')).toBeTruthy();
         const customInputs = nodes.filter(
             (node) => node.tag === 'input' && node.type === 'text' && node.value === '5',
         );
@@ -282,26 +288,60 @@ describe('RESOURCES_SCRIPT', () => {
         expect(ui.byId.apply.disabled).toBe(true);
     });
 
-    it('keeps the same range input across successive drag input events', () => {
+    it('clamps and snaps typed values on change, without re-rendering', () => {
         const ui = mount(payload());
-        const before = walk(ui.byId.resources).find(
-            (node) => node.tag === 'input' && node.type === 'range' && node.value === '170',
-        );
-        expect(before).toBeTruthy();
+        const field = valueInput(ui.byId.resources, 'cpu')!;
 
-        before!.value = '180';
-        before!.fire('input');
-        before!.value = '190';
-        before!.fire('input');
-        before!.value = '200';
-        before!.fire('input');
+        field.value = '9999';
+        field.fire('change');
+        expect(field.value).toBe('500');
 
-        const after = walk(ui.byId.resources).find(
-            (node) => node.tag === 'input' && node.type === 'range',
+        field.value = '12';
+        field.fire('change');
+        expect(field.value).toBe('50');
+
+        field.value = '233';
+        field.fire('change');
+        expect(field.value).toBe('230');
+
+        field.value = 'abc';
+        field.fire('change');
+        expect(field.value).toBe('230');
+
+        expect(valueInput(ui.byId.resources, 'cpu')).toBe(field);
+        ui.click('apply');
+        expect((ui.messages[0] as { editor: ResourceEditorState }).editor.cpu).toEqual({
+            mode: 'slider',
+            value: 230,
+        });
+    });
+
+    it('converts through the unit box and reset restores the live value', () => {
+        const ui = mount(payload());
+        const select = walk(ui.byId.resources).find(
+            (node) => node.tag === 'select' && node.dataset.unitFor === 'memory',
+        )!;
+        select.value = 'GiB';
+        select.fire('change');
+
+        let field = valueInput(ui.byId.resources, 'memory')!;
+        expect(field.value).toBe('0.2');
+        field.value = '1.5';
+        field.fire('change');
+        expect(field.value).toBe('1.5');
+
+        const reset = walk(ui.byId.resources).filter(
+            (node) => node.tag === 'button' && node.textContent === 'Reset',
         );
-        // Same node identity — a full re-render would replace it and break dragging.
-        expect(after).toBe(before);
-        expect(after?.value).toBe('200');
+        // cpu, memory, storage rows render in order.
+        reset[1].fire('click');
+        field = valueInput(ui.byId.resources, 'memory')!;
+        expect(field.value).toBe('0.2');
+        ui.click('apply');
+        expect((ui.messages[0] as { editor: ResourceEditorState }).editor.memory).toEqual({
+            mode: 'slider',
+            value: 200,
+        });
     });
 
     it('discards edits back to the baseline payload', () => {
@@ -337,10 +377,7 @@ describe('RESOURCES_SCRIPT', () => {
         expect(ui.byId.status.textContent).toBe('Updated resources for production.');
         expect(ui.byId.apply.disabled).toBe(false);
 
-        const ranges = walk(ui.byId.resources).filter(
-            (node) => node.tag === 'input' && node.type === 'range',
-        );
-        expect(ranges.some((node) => node.value === '200')).toBe(true);
+        expect(valueInput(ui.byId.resources, 'cpu')?.value).toBe('200');
         expect(findLiveInput(ui.byId.networking, 'checkbox')?.checked).toBe(true);
     });
 });
