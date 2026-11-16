@@ -82,13 +82,18 @@ const RESOURCES_CSS = `
     font-size: 0.92em;
     font-weight: 600;
   }
-  .slider-row input[type="range"] {
-    width: 100%;
-    accent-color: var(--vscode-button-background, #0e639c);
+  .value-entry { display: flex; gap: 6px; align-items: stretch; }
+  .value-entry .value-input { flex: 1; min-width: 0; }
+  .unit-select {
+    font: inherit;
+    color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+    background: var(--vscode-dropdown-background, var(--vscode-input-background));
+    border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, transparent));
+    border-radius: 2px;
+    padding: 0 6px;
   }
   .bounds {
     display: flex;
-    justify-content: space-between;
     color: var(--vscode-descriptionForeground);
     font-size: 0.82em;
   }
@@ -316,16 +321,71 @@ export const RESOURCES_SCRIPT = `
     return JSON.parse(JSON.stringify(value));
   }
 
-  function syncRange(key, value) {
-    const other = document.querySelector('input[type="range"][data-key="' + key + '"]');
-    if (other) {
-      other.value = String(value);
+  // Display units are a webview-only preference. Values are always stored in
+  // base units (millicores / MB) so Apply payloads never depend on the unit.
+  const UNIT_OPTIONS = {
+    cpu: [{ label: 'm', factor: 1 }, { label: 'cores', factor: 1000 }],
+    size: [{ label: 'MiB', factor: 1 }, { label: 'GiB', factor: 1000 }],
+  };
+  const units = {};
+
+  function unitsFor(kind) { return UNIT_OPTIONS[kind] || []; }
+
+  function unitFor(key, value) {
+    const list = unitsFor(RANGES[key].kind);
+    if (!list.length) return null;
+    if (!units[key]) {
+      units[key] = RANGES[key].kind === 'size' && value >= 1000 && value % 1000 === 0 ? list[1] : list[0];
     }
-    const bound = document.querySelector('[data-bound-for="' + key + '"]');
+    return units[key];
+  }
+
+  function toDisplay(value, unit) {
+    const factor = unit ? unit.factor : 1;
+    return String(Math.round((value / factor) * 1000) / 1000);
+  }
+
+  function clampToRange(range, n) {
+    const bounded = Math.min(range.max, Math.max(range.min, n));
+    const snapped = range.min + Math.round((bounded - range.min) / range.step) * range.step;
+    return Math.min(range.max, snapped);
+  }
+
+  function commitValue(key, field, unit) {
     const range = RANGES[key];
-    if (bound && range) {
-      bound.textContent = formatFor(range.kind, value);
+    const previous = editor[key];
+    const text = field.value.trim();
+    const parsed = Number(text);
+    if (previous.mode !== 'slider' || text === '' || !Number.isFinite(parsed)) {
+      if (previous.mode === 'slider') field.value = toDisplay(previous.value, unit);
+      return;
     }
+    let next = clampToRange(range, parsed * (unit ? unit.factor : 1));
+    let coupled = false;
+    if (key === 'replicas' && editor.maxReplicas.mode === 'slider' && editor.maxReplicas.value < next) {
+      editor.maxReplicas = { mode: 'slider', value: next };
+      coupled = true;
+    }
+    if (key === 'maxReplicas' && editor.replicas.mode === 'slider' && next < editor.replicas.value) {
+      next = editor.replicas.value;
+    }
+    editor[key] = { mode: 'slider', value: next };
+    field.value = toDisplay(next, unit);
+    if (coupled) render();
+  }
+
+  function resetButton(key) {
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'reset-btn';
+    reset.textContent = 'Reset';
+    reset.title = 'Back to the live value';
+    reset.addEventListener('click', () => {
+      if (!baseline) return;
+      editor[key] = clone(baseline[key]);
+      render();
+    });
+    return reset;
   }
 
   function setStatus(kind, text) {
@@ -354,7 +414,7 @@ export const RESOURCES_SCRIPT = `
     if (control.mode === 'custom') {
       const note = document.createElement('p');
       note.className = 'custom-note warn';
-      note.textContent = 'Value is outside the slider range (or not on a step). Editing as text so Apply will not clamp it.';
+      note.textContent = 'Value is outside the allowed range (or not on a step). Editing as text so Apply will not clamp it.';
       wrap.appendChild(note);
 
       const input = document.createElement('input');
@@ -370,12 +430,13 @@ export const RESOURCES_SCRIPT = `
       actions.className = 'actions-inline';
       const useSlider = document.createElement('button');
       useSlider.type = 'button';
-      useSlider.textContent = 'Use slider (' + formatFor(range.kind, range.fallback) + ')';
+      useSlider.textContent = 'Use value (' + formatFor(range.kind, range.fallback) + ')';
       useSlider.addEventListener('click', () => {
         editor[key] = { mode: 'slider', value: range.fallback };
         render();
       });
       actions.appendChild(useSlider);
+      actions.appendChild(resetButton(key));
       wrap.appendChild(actions);
       host.appendChild(wrap);
       return;
@@ -384,14 +445,14 @@ export const RESOURCES_SCRIPT = `
     if (control.mode === 'unset') {
       const note = document.createElement('p');
       note.className = 'custom-note';
-      note.textContent = 'Not set. Use the slider to choose a value, or leave blank.';
+      note.textContent = 'Not set. Enter a value, or leave blank.';
       wrap.appendChild(note);
 
       const actions = document.createElement('div');
       actions.className = 'actions-inline';
       const useSlider = document.createElement('button');
       useSlider.type = 'button';
-      useSlider.textContent = 'Set with slider';
+      useSlider.textContent = 'Set value';
       useSlider.addEventListener('click', () => {
         editor[key] = { mode: 'slider', value: range.fallback };
         render();
@@ -405,46 +466,58 @@ export const RESOURCES_SCRIPT = `
       });
       actions.appendChild(useSlider);
       actions.appendChild(custom);
+      actions.appendChild(resetButton(key));
       wrap.appendChild(actions);
       host.appendChild(wrap);
       return;
     }
 
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = String(range.min);
-    input.max = String(range.max);
-    input.step = String(range.step);
-    input.value = String(control.value);
-    input.dataset.key = key;
-    // Update in place — calling render() here tears down the <input> mid-drag
-    // and leaves the control click-only.
-    input.addEventListener('input', () => {
-      const next = Number(input.value);
-      editor[key] = { mode: 'slider', value: next };
-      left.textContent = formatFor(range.kind, next);
+    const unit = unitFor(key, control.value);
+    const entry = document.createElement('div');
+    entry.className = 'value-entry';
 
-      if (key === 'replicas' && editor.maxReplicas.mode === 'slider' && editor.maxReplicas.value < next) {
-        editor.maxReplicas = { mode: 'slider', value: next };
-        syncRange('maxReplicas', next);
-      }
-      if (key === 'maxReplicas' && editor.replicas.mode === 'slider' && next < editor.replicas.value) {
-        editor.maxReplicas = { mode: 'slider', value: editor.replicas.value };
-        input.value = String(editor.replicas.value);
-        left.textContent = formatFor(range.kind, editor.replicas.value);
-      }
+    const field = document.createElement('input');
+    field.type = 'text';
+    field.inputMode = 'decimal';
+    field.className = 'text-field value-input';
+    field.dataset.key = key;
+    field.setAttribute('aria-label', label);
+    field.value = toDisplay(control.value, unit);
+    // Commit (clamp + snap) on blur/Enter, not per keystroke, so typing "1."
+    // or an empty box does not fight the user.
+    field.addEventListener('change', () => commitValue(key, field, unit));
+    field.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { commitValue(key, field, unit); }
     });
-    wrap.appendChild(input);
+    entry.appendChild(field);
+
+    const unitList = unitsFor(range.kind);
+    if (unitList.length) {
+      const select = document.createElement('select');
+      select.className = 'unit-select';
+      select.dataset.unitFor = key;
+      select.setAttribute('aria-label', label + ' unit');
+      for (const u of unitList) {
+        const option = document.createElement('option');
+        option.value = u.label;
+        option.textContent = u.label;
+        option.selected = u === unit;
+        select.appendChild(option);
+      }
+      select.addEventListener('change', () => {
+        units[key] = unitList.find((u) => u.label === select.value) || unitList[0];
+        render();
+      });
+      entry.appendChild(select);
+    }
+    wrap.appendChild(entry);
 
     const bounds = document.createElement('div');
     bounds.className = 'bounds';
-    const left = document.createElement('span');
-    left.dataset.boundFor = key;
-    left.textContent = formatFor(range.kind, control.value);
-    const right = document.createElement('span');
-    right.textContent = formatFor(range.kind, range.max);
-    bounds.appendChild(left);
-    bounds.appendChild(right);
+    bounds.dataset.boundFor = key;
+    bounds.textContent =
+      'Min ' + formatFor(range.kind, range.min) + ' · Max ' + formatFor(range.kind, range.max) +
+      (baseline && baseline[key].mode === 'slider' ? ' · Live ' + formatFor(range.kind, baseline[key].value) : '');
     wrap.appendChild(bounds);
 
     const actions = document.createElement('div');
@@ -471,6 +544,7 @@ export const RESOURCES_SCRIPT = `
       editor[key] = { mode: 'custom', raw: raw };
       render();
     });
+    actions.appendChild(resetButton(key));
     actions.appendChild(clear);
     actions.appendChild(custom);
     wrap.appendChild(actions);
